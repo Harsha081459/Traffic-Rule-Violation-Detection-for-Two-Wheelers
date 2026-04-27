@@ -1,8 +1,10 @@
 fastapi
 uvicorn
 python-multipart
+ultralytics
 
 
 # fastapi
 # uvicorn
 # python-multipart
+# ultralytics
