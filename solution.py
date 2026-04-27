@@ -567,35 +567,319 @@ class TrafficViolationDetector:
                     conf=float(box.conf[0]),
                     xyxy=[float(v) for v in box.xyxy[0]],
                 ))
+        return dets
+
+    @staticmethod
+    def _has_cuda() -> bool:
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except Exception:
+            return False
+
+    # -------------------------------------------------------------------------
+    # Category helpers
+    # -------------------------------------------------------------------------
+
+    _BIKE_NAMES  = {"motorcycle", "motorbike", "scooter", "two_wheeler", "bike"}
+    _RIDER_NAMES = {"person", "rider", "human", "pedestrian"}
+    _HELMET_NAMES    = {"helmet", "with_helmet", "with helmet"}
+    _NO_HELMET_NAMES = {"no_helmet", "no helmet", "without_helmet", "without helmet",
+                        "nohelmet", "bare_head", "bare head"}
+    _PLATE_NAMES = {"license_plate", "licence_plate", "plate", "numberplate",
+                    "number_plate", "lp"}
+
+    def _bike_category(self, d: Det) -> Optional[str]:
+        n = _norm_name(d.cls_name)
+        if n in self._BIKE_NAMES or n in {"two_wheeler", "twowheeler", "2_wheeler"}:
+            return "bike"
+        # Fallback for your trained full detector: class 0 = two_wheeler.
+        return "bike" if d.cls_id == 0 else None
+
+    def _rider_category(self, d: Det) -> Optional[str]:
+        n = _norm_name(d.cls_name)
+        if n in self._RIDER_NAMES:
+            return "rider"
+        # Fallback for your trained full detector: class 1 = rider.
+        return "rider" if d.cls_id == 1 else None
+
+    def _helmet_category(self, d: Det) -> Optional[str]:
+        n = _norm_name(d.cls_name)
+        if n in self._HELMET_NAMES:
+            return "helmet"
+        if n in self._NO_HELMET_NAMES:
+            return "no_helmet"
+        # Fallback for your trained helmet detector: class 0 = helmet, class 1 = no_helmet.
+        if d.cls_id == 0:
+            return "helmet"
+        if d.cls_id == 1:
+            return "no_helmet"
+        return None
+
+    def _plate_category(self, d: Det) -> Optional[str]:
+        n = _norm_name(d.cls_name)
+        if n in self._PLATE_NAMES:
+            return "plate"
+        # Fallback for one-class plate detector.
+        return "plate" if d.cls_id == 0 else None
+
+    # -------------------------------------------------------------------------
+    # Step 1 — Global bike + rider detection
+    # -------------------------------------------------------------------------
+
+    def _get_full_detector_recall_candidates(
+        self, img: np.ndarray
+    ) -> Tuple[List[Det], List[Det]]:
+        """
+        Recall fallback using the same custom full_detector.
+
+        This is called only when the normal detector misses bike/rider.
+        It uses a lower confidence and higher image size, but does not replace
+        good detections from the normal path.
+        """
+        fallback_imgsz = max(self.full_imgsz, 960)
+        fallback_conf = min(self.full_conf, 0.10)
+
+        raw = self._predict_yolo(
+            self.full_model,
+            img,
+            fallback_imgsz,
+            fallback_conf,
+        )
+
+        bikes = _nms_same_class(
+            [d for d in raw if self._bike_category(d) == "bike"],
+            0.50,
+        )
+
+        riders = _nms_same_class(
+            [d for d in raw if self._rider_category(d) == "rider"],
+            0.45,
+        )
+
+        return bikes, riders
+
+    def _get_coco_candidates(
+        self, img: np.ndarray
+    ) -> Tuple[List[Det], List[Det]]:
+        """
+        COCO fallback using models/yolo11n.pt.
+
+        COCO classes used:
+          person     -> possible rider
+          motorcycle -> two_wheeler
+
+        Person detections are filtered later using bike overlap so pedestrians
+        do not directly become riders.
+        """
+        if self.coco_model is None:
+            return [], []
+
+        raw = self._predict_yolo(
+            self.coco_model,
+            img,
+            imgsz=max(self.full_imgsz, 960),
+            conf=0.15,
+        )
+
+        bikes: List[Det] = []
+        persons: List[Det] = []
+
+        for d in raw:
+            n = _norm_name(d.cls_name)
+
+            if n in {"motorcycle", "motorbike", "scooter"}:
+                bikes.append(Det(
+                    cls_id=0,
+                    cls_name="two_wheeler",
+                    conf=d.conf,
+                    xyxy=d.xyxy,
+                ))
+
+            elif n == "person":
+                persons.append(Det(
+                    cls_id=1,
+                    cls_name="rider",
+                    conf=d.conf,
+                    xyxy=d.xyxy,
+                ))
+
+        bikes = _nms_same_class(bikes, 0.50)
+        persons = _nms_same_class(persons, 0.45)
+
+        return bikes, persons
+
+    def _filter_persons_as_riders(
+        self,
+        persons: List[Det],
+        bikes: List[Det],
+    ) -> List[Det]:
+        """
+        Convert COCO person boxes to rider boxes only if they are associated
+        with a motorcycle/two_wheeler. This avoids treating pedestrians as riders.
+        """
+        if not persons or not bikes:
+            return []
+
+        riders: List[Det] = []
+
+        for person in persons:
+            px1, py1, px2, py2 = person.xyxy
+            p_area = max(1e-6, (px2 - px1) * (py2 - py1))
+            p_cx = (px1 + px2) / 2.0
+            p_cy = (py1 + py2) / 2.0
+            p_bottom_y = py2
+
+            best_score = 0.0
+
+            for bike in bikes:
+                bx1, by1, bx2, by2 = bike.xyxy
+                bw = bx2 - bx1
+                bh = by2 - by1
+
+                # Expanded bike region captures rider above and around the bike.
+                ex_box = [
+                    bx1 - 0.25 * bw,
+                    by1 - 0.90 * bh,
+                    bx2 + 0.25 * bw,
+                    by2 + 0.35 * bh,
+                ]
+
+                overlap = _inter_area(person.xyxy, ex_box) / p_area
+
+                center_inside = (
+                    ex_box[0] <= p_cx <= ex_box[2]
+                    and ex_box[1] <= p_cy <= ex_box[3]
+                )
+
+                bottom_inside = (
+                    ex_box[0] <= p_cx <= ex_box[2]
+                    and ex_box[1] <= p_bottom_y <= ex_box[3]
+                )
+
+                score = overlap
+
+                if center_inside:
+                    score += 0.25
+
+                if bottom_inside:
+                    score += 0.25
+
+                best_score = max(best_score, score)
+
+            if best_score >= 0.18:
+                riders.append(person)
+
+        return _nms_same_class(riders, 0.45)
+
+    def _get_bikes_and_riders(
+        self, img: np.ndarray
+    ) -> Tuple[List[Det], List[Det]]:
+        # ------------------------------------------------------------
+        # 1. Original normal detection path
+        # ------------------------------------------------------------
+        raw = self._predict_yolo(self.full_model, img, self.full_imgsz, self.full_conf)
+
+        bikes = _nms_same_class(
+            [d for d in raw if self._bike_category(d) == "bike"],
+            0.50,
+        )
+
+        riders = _nms_same_class(
+            [d for d in raw if self._rider_category(d) == "rider"],
+            0.45,
+        )
+
+        # If the old detector already works, do not change anything.
+        if bikes and riders:
+            return bikes, riders
+
+        # ------------------------------------------------------------
+        # 2. Recall fallback using the same custom full_detector
+        # ------------------------------------------------------------
+        recall_bikes, recall_riders = self._get_full_detector_recall_candidates(img)
+
+        if not bikes and recall_bikes:
+            bikes = recall_bikes
+
+        if not riders and recall_riders:
+            riders = recall_riders
+
+        if bikes and riders:
+            return bikes, riders
+
+        # ------------------------------------------------------------
+        # 3. COCO fallback using yolo11n.pt
+        # ------------------------------------------------------------
+        coco_bikes, coco_persons = self._get_coco_candidates(img)
+
+        if not bikes and coco_bikes:
+            bikes = coco_bikes
+
+        if not riders and coco_persons and bikes:
+            riders = self._filter_persons_as_riders(coco_persons, bikes)
+
+        return bikes, riders
+
+    # -------------------------------------------------------------------------
+    # Step 2 — Associate riders to bikes
+    # -------------------------------------------------------------------------
+
+    def _associate_riders(
+        self,
+        bikes: List[Det],
+        riders: List[Det],
+        img_shape: Tuple[int, ...],
+    ) -> Dict[int, List[Det]]:
+        rider_map: Dict[int, List[Det]] = {i: [] for i in range(len(bikes))}
+        for rider in riders:
+            best_idx, best_iou = -1, 0.0
+            rx1, ry1, rx2, ry2 = rider.xyxy
+            for i, bike in enumerate(bikes):
+                bx1, by1, bx2, by2 = bike.xyxy
+                # Expand bike box to capture riders who sit higher than the frame.
+                bx1e = bx1 - (bx2 - bx1) * 0.1
+                by1e = by1 - (by2 - by1) * 0.6
+                overlap = _inter_area(rider.xyxy, [bx1e, by1e, bx2, by2])
+                rider_area = max(1e-6, (rx2 - rx1) * (ry2 - ry1))
+                score = overlap / rider_area
+                if score > best_iou:
+                    best_iou, best_idx = score, i
+            if best_idx >= 0 and best_iou > 0.10:
+                rider_map[best_idx].append(rider)
+        return rider_map
+
+    # -------------------------------------------------------------------------
+    # Step 3a — Helmet detection per bike
 
 
-#             results = model.predict(
-#                 img,
-#                 imgsz=imgsz,
-#                 conf=conf,
-#                 iou=self.iou_thr,
-#                 verbose=False,
-#                 device=self.device,
-#             )
-#         except Exception:
-#             results = model.predict(
-#                 img,
-#                 imgsz=imgsz,
-#                 conf=conf,
-#                 iou=self.iou_thr,
-#                 verbose=False,
-#             )
+#     # -------------------------------------------------------------------------
+#     # Step 2 — Associate riders to bikes
+#     # -------------------------------------------------------------------------
 # 
-#         dets: List[Det] = []
-#         for r in results:
-#             if r.boxes is None:
-#                 continue
-#             names = r.names
-#             for box in r.boxes:
-#                 cls_id = int(box.cls[0])
-#                 dets.append(Det(
-#                     cls_id=cls_id,
-#                     cls_name=str(names.get(cls_id, cls_id)),
-#                     conf=float(box.conf[0]),
-#                     xyxy=[float(v) for v in box.xyxy[0]],
-#                 ))
+#     def _associate_riders(
+#         self,
+#         bikes: List[Det],
+#         riders: List[Det],
+#         img_shape: Tuple[int, ...],
+#     ) -> Dict[int, List[Det]]:
+#         rider_map: Dict[int, List[Det]] = {i: [] for i in range(len(bikes))}
+#         for rider in riders:
+#             best_idx, best_iou = -1, 0.0
+#             rx1, ry1, rx2, ry2 = rider.xyxy
+#             for i, bike in enumerate(bikes):
+#                 bx1, by1, bx2, by2 = bike.xyxy
+#                 # Expand bike box to capture riders who sit higher than the frame.
+#                 bx1e = bx1 - (bx2 - bx1) * 0.1
+#                 by1e = by1 - (by2 - by1) * 0.6
+#                 overlap = _inter_area(rider.xyxy, [bx1e, by1e, bx2, by2])
+#                 rider_area = max(1e-6, (rx2 - rx1) * (ry2 - ry1))
+#                 score = overlap / rider_area
+#                 if score > best_iou:
+#                     best_iou, best_idx = score, i
+#             if best_idx >= 0 and best_iou > 0.10:
+#                 rider_map[best_idx].append(rider)
+#         return rider_map
+# 
+#     # -------------------------------------------------------------------------
+#     # Step 3a — Helmet detection per bike
