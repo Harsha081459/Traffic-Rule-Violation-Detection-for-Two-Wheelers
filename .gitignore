@@ -6,6 +6,10 @@ __pycache__/
 *.pyc
 
 # Large training artifacts
+runs/
+runs.zip
+
+# Model weights (too large for GitHub, hosted on HuggingFace)
 
 
 # # Virtual environment
@@ -16,3 +20,7 @@ __pycache__/
 # *.pyc
 # 
 # # Large training artifacts
+# runs/
+# runs.zip
+# 
+# # Model weights (too large for GitHub, hosted on HuggingFace)
