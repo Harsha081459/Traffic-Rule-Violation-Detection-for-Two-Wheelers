@@ -1,0 +1,17 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Large training artifacts
+runs/
+runs.zip
+
+# Model weights (too large for GitHub, hosted on HuggingFace)
+models/
+
+# OS files
+.DS_Store
+Thumbs.db
