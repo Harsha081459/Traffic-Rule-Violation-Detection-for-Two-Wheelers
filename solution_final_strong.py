@@ -349,35 +349,386 @@ def _vote_plate(candidates: List[Tuple[str, float]]) -> str:
         return ""
 
     # Weighted scoring.
+    scored: Dict[str, float] = {}
+    for t, c in pool:
+        s = _plate_format_score(t) * max(c, 0.05)
+        scored[t] = scored.get(t, 0.0) + s
+
+    best_text = max(scored.items(), key=lambda kv: kv[1])[0]
+
+    # Character-level voting among same-length candidates.
+    same_len = [(t, c) for t, c in pool if len(t) == len(best_text)]
+    if len(same_len) < 2:
+        return best_text
+
+    out = []
+    for i in range(len(best_text)):
+        votes: Dict[str, float] = {}
+        for text, conf in same_len:
+            ch = text[i]
+            votes[ch] = votes.get(ch, 0.0) + max(conf, 0.01)
+        out.append(max(votes.items(), key=lambda kv: kv[1])[0])
+
+    voted = "".join(out)
+    return voted if len(voted) >= len(best_text) else best_text
 
 
+# =============================================================================
+# Main detector class
+# =============================================================================
+
+class TrafficViolationDetector:
+    """
+    Two-wheeler traffic violation detector.
+
+    Detects violations per bike:
+      1. More than 2 riders.
+      2. One or more riders not wearing a helmet.
+      3. Combination of the above.
+
+    For each violating bike, also reads the license plate (full string).
+    """
+
+    def __init__(self, model_dir: str = "./models"):
+        """
+        Load all models from model_dir.
+        Internet access is NOT required — all weights must be local.
+        """
+        self.model_dir = Path(model_dir)
+
+        # Avoid OpenCV over-threading overhead on small crops.
+        try:
+            cv2.setNumThreads(1)
+        except Exception:
+            pass
+
+        # Avoid PyTorch thread thrashing on limited cloud CPUs (HuggingFace Free Tier)
+        try:
+            import torch
+            torch.set_num_threads(1)
+        except Exception:
+            pass
+
+        # ── Detection models (required) ────────────────────────────────────
+        self.full_model   = YOLO(str(self._find_model(["full_detector.pt",   "yolo11m.pt"])))
+        self.helmet_model = YOLO(str(self._find_model(["helmet_detector.pt", "yolo11s_helmet.pt"])))
+        self.plate_model  = YOLO(str(self._find_model(["plate_detector.pt",  "yolo11n_plate.pt"])))
+
+        # ── Optional COCO fallback model ───────────────────────────────────
+        # Used only when the custom full_detector misses bike/rider.
+        # Put yolo11n.pt inside models/ folder. If missing, pipeline still works normally.
+        self.coco_model = self._try_load_model(["yolo11n.pt", "coco_yolo11n.pt"])
+
+        # ── Runtime mode ──────────────────────────────────────────────────
+        # Default is FAST mode because the assignment guideline is <=5 sec/image.
+        # Set TV_ACCURATE_MODE=1 only for local experiments, not final submission.
+        self.fast_mode = os.environ.get("TV_ACCURATE_MODE", "0") != "1"
+
+        # Pose adds one more YOLO call per bike. Keep it disabled by default.
+        self.use_pose = os.environ.get("TV_USE_POSE", "0") == "1"
+        self.pose_model = self._try_load_model(["pose_detector.pt", "yolo11n-pose.pt"]) if self.use_pose else None
+
+        # Cache device once instead of checking CUDA on every YOLO call.
+        self.device = 0 if self._has_cuda() else "cpu"
+
+        # ── Inference thresholds ──────────────────────────────────────────
+        if self.fast_mode:
+            # BALANCED FAST MODE: still targets <=5 sec, but keeps enough
+            # resolution/recall to avoid missing smaller bikes/plates.
+            # Your earlier 640/480/512 + 1 OCR variant was ~1.45s but lost
+            # one violation and returned empty plate on the sample image.
+            self.full_imgsz   = 640
+            self.helmet_imgsz = 480
+            self.plate_imgsz  = 480
+            self.pose_imgsz   = 480
+            self.max_bikes_to_process = 4
+            self.max_plates_to_ocr = 2
+            self.max_ocr_variants = 1
+        else:
+            self.full_imgsz   = 960
+            self.helmet_imgsz = 640
+            self.plate_imgsz  = 960
+            self.pose_imgsz   = 640
+            self.max_bikes_to_process = 8
+            self.max_plates_to_ocr = 3
+            self.max_ocr_variants = 3
+
+        self.full_conf   = 0.25
+        self.helmet_conf = 0.22
+        self.plate_conf  = 0.12
+        self.pose_conf   = 0.25
+        self.iou_thr     = 0.50
+
+        # ── OCR: EasyOCR only ─────────────────────────────────────────────
+        self.ocr = self._load_easyocr()
+
+        # ── Warm up YOLO models to avoid cold-start latency ───────────────
+        dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+        for mdl in [self.full_model, self.helmet_model, self.plate_model, self.coco_model]:
+            if mdl is None:
+                continue
+            try:
+                mdl.predict(dummy, imgsz=64, verbose=False)
+            except Exception:
+                pass
+
+    # -------------------------------------------------------------------------
+    # Model loading helpers
+    # -------------------------------------------------------------------------
+
+    def _find_model(self, candidates: List[str]) -> Path:
+        for name in candidates:
+            p = self.model_dir / name
+            if p.exists():
+                return p
+        raise FileNotFoundError(
+            f"None of {candidates} found in {self.model_dir}"
+        )
+
+    def _try_load_model(self, candidates: List[str]) -> Optional[YOLO]:
+        for name in candidates:
+            p = self.model_dir / name
+            if p.exists():
+                try:
+                    return YOLO(str(p))
+                except Exception:
+                    pass
+        return None
+
+    def _load_easyocr(self):
+        """Load EasyOCR from local models/easyocr only. No internet downloads."""
+        if not EASYOCR_AVAILABLE:
+            return None
+
+        ocr_dir = self.model_dir / "easyocr"
+        try:
+            has_pth = ocr_dir.exists() and any(ocr_dir.rglob("*.pth"))
+        except Exception:
+            has_pth = False
+
+        if not has_pth:
+            return None
+
+        try:
+            return _easyocr_lib.Reader(
+                ["en"],
+                gpu=(self.device != "cpu"),
+                model_storage_directory=str(ocr_dir),
+                user_network_directory=str(ocr_dir / "user_network"),
+                download_enabled=False,
+                verbose=False,
+            )
+        except TypeError:
+            try:
+                return _easyocr_lib.Reader(
+                    ["en"],
+                    gpu=(self.device != "cpu"),
+                    model_storage_directory=str(ocr_dir),
+                    download_enabled=False,
+                    verbose=False,
+                )
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    # -------------------------------------------------------------------------
+    # YOLO inference helper
+    # -------------------------------------------------------------------------
+
+    def _predict_yolo(
+        self,
+        model: YOLO,
+        img: np.ndarray,
+        imgsz: int,
+        conf: float,
+    ) -> List[Det]:
+        try:
+            results = model.predict(
+                img,
+                imgsz=imgsz,
+                conf=conf,
+                iou=self.iou_thr,
+                verbose=False,
+                device=self.device,
+            )
+        except Exception:
+            results = model.predict(
+                img,
+                imgsz=imgsz,
+                conf=conf,
+                iou=self.iou_thr,
+                verbose=False,
+            )
+
+        dets: List[Det] = []
+        for r in results:
+            if r.boxes is None:
+                continue
+            names = r.names
+            for box in r.boxes:
+                cls_id = int(box.cls[0])
+                dets.append(Det(
+                    cls_id=cls_id,
+                    cls_name=str(names.get(cls_id, cls_id)),
+                    conf=float(box.conf[0]),
+                    xyxy=[float(v) for v in box.xyxy[0]],
+                ))
+        return dets
+
+    @staticmethod
+    def _has_cuda() -> bool:
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except Exception:
+            return False
+
+    # -------------------------------------------------------------------------
+    # Category helpers
+    # -------------------------------------------------------------------------
+
+    _BIKE_NAMES  = {"motorcycle", "motorbike", "scooter", "two_wheeler", "bike"}
+    # IMPORTANT: do not treat generic COCO "person"/"pedestrian" as a rider here.
+    # COCO persons are converted to riders only inside _filter_persons_as_riders(),
+    # after checking overlap with a two-wheeler. This prevents pedestrians from
+    # becoming false riders when a pretrained fallback model is present.
+    _RIDER_NAMES = {"rider", "driver", "pillion", "human"}
+    _HELMET_NAMES    = {"helmet", "with_helmet", "with helmet"}
+    _NO_HELMET_NAMES = {"no_helmet", "no helmet", "without_helmet", "without helmet",
+                        "nohelmet", "bare_head", "bare head"}
+    _PLATE_NAMES = {"license_plate", "licence_plate", "plate", "numberplate",
+                    "number_plate", "lp"}
+
+    def _bike_category(self, d: Det) -> Optional[str]:
+        n = _norm_name(d.cls_name)
+        if n in self._BIKE_NAMES or n in {"two_wheeler", "twowheeler", "2_wheeler"}:
+            return "bike"
+        # Safe fallback only when the model does not expose useful class names.
+        # Do NOT blindly map class 0 to bike because COCO class 0 is "person".
+        if d.cls_id == 0 and n in {"0", "0.0"}:
+            return "bike"
+        return None
+
+    def _rider_category(self, d: Det) -> Optional[str]:
+        n = _norm_name(d.cls_name)
+        if n in self._RIDER_NAMES:
+            return "rider"
+        # Safe fallback only when the model does not expose useful class names.
+        # Generic "person" is handled only by the COCO fallback association logic.
+        if d.cls_id == 1 and n in {"1", "1.0"}:
+            return "rider"
+        return None
+
+    def _helmet_category(self, d: Det) -> Optional[str]:
+        n = _norm_name(d.cls_name)
+        if n in self._HELMET_NAMES:
+            return "helmet"
+        if n in self._NO_HELMET_NAMES:
+            return "no_helmet"
+        # Fallback for your trained helmet detector: class 0 = helmet, class 1 = no_helmet.
+        if d.cls_id == 0:
+            return "helmet"
+        if d.cls_id == 1:
+            return "no_helmet"
+        return None
+
+    def _plate_category(self, d: Det) -> Optional[str]:
+        n = _norm_name(d.cls_name)
+        if n in self._PLATE_NAMES:
+            return "plate"
+        # Fallback for one-class plate detector.
+        return "plate" if d.cls_id == 0 else None
+
+    # -------------------------------------------------------------------------
+    # Step 1 — Global bike + rider detection
+    # -------------------------------------------------------------------------
+
+    def _get_full_detector_recall_candidates(
+        self, img: np.ndarray
+    ) -> Tuple[List[Det], List[Det]]:
+        """
+        Recall fallback using the same custom full_detector.
+
+        This is called only when the normal detector misses bike/rider.
+        It uses a lower confidence and higher image size, but does not replace
+        good detections from the normal path.
+        """
+        fallback_imgsz = max(self.full_imgsz, 960)
+        fallback_conf = min(self.full_conf, 0.10)
+
+        raw = self._predict_yolo(
+            self.full_model,
+            img,
+            fallback_imgsz,
+            fallback_conf,
+        )
+
+        bikes = _nms_same_class(
+            [d for d in raw if self._bike_category(d) == "bike"],
+            0.50,
+        )
+
+        riders = _nms_same_class(
+            [d for d in raw if self._rider_category(d) == "rider"],
+            0.45,
+        )
+
+        return bikes, riders
+
+    def _get_coco_candidates(
+        self, img: np.ndarray
+    ) -> Tuple[List[Det], List[Det]]:
+        """
+        COCO fallback using models/yolo11n.pt.
+
+        COCO classes used:
+          person     -> possible rider
+          motorcycle -> two_wheeler
+
+        Person detections are filtered later using bike overlap so pedestrians
+        do not directly become riders.
+        """
+        if self.coco_model is None:
+            return [], []
+
+        raw = self._predict_yolo(
+            self.coco_model,
+            img,
+            imgsz=max(self.full_imgsz, 960),
+            conf=0.15,
+        )
+
+        bikes: List[Det] = []
+
+
+#             [d for d in raw if self._rider_category(d) == "rider"],
+#             0.45,
+#         )
 # 
+#         return bikes, riders
 # 
-# def _vote_plate(candidates: List[Tuple[str, float]]) -> str:
-#     """
-#     Pick the best plate string from a list of (text, confidence) candidates.
+#     def _get_coco_candidates(
+#         self, img: np.ndarray
+#     ) -> Tuple[List[Det], List[Det]]:
+#         """
+#         COCO fallback using models/yolo11n.pt.
 # 
-#     Strategy:
-#     1. Score each candidate by plate format score × confidence.
-#     2. Among same-length candidates, do character-level voting to fix
-#        single-character misreads across variants.
-#     """
-#     if not candidates:
-#         return ""
+#         COCO classes used:
+#           person     -> possible rider
+#           motorcycle -> two_wheeler
 # 
-#     pool: List[Tuple[str, float]] = []
-#     for t, c in candidates:
-#         t = _clean_plate_text(t)
-#         if len(t) < 4:
-#             continue
-#         try:
-#             c = float(c)
-#         except Exception:
-#             c = 0.0
-#         # Hard cap to avoid junk strings from OCR noise.
-#         pool.append((t[:12], c))
+#         Person detections are filtered later using bike overlap so pedestrians
+#         do not directly become riders.
+#         """
+#         if self.coco_model is None:
+#             return [], []
 # 
-#     if not pool:
-#         return ""
+#         raw = self._predict_yolo(
+#             self.coco_model,
+#             img,
+#             imgsz=max(self.full_imgsz, 960),
+#             conf=0.15,
+#         )
 # 
-#     # Weighted scoring.
+#         bikes: List[Det] = []
