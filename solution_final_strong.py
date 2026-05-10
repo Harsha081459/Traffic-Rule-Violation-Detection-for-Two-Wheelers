@@ -700,35 +700,386 @@ class TrafficViolationDetector:
         )
 
         bikes: List[Det] = []
+        persons: List[Det] = []
+
+        for d in raw:
+            n = _norm_name(d.cls_name)
+
+            if n in {"motorcycle", "motorbike", "scooter"}:
+                bikes.append(Det(
+                    cls_id=0,
+                    cls_name="two_wheeler",
+                    conf=d.conf,
+                    xyxy=d.xyxy,
+                ))
+
+            elif n == "person":
+                persons.append(Det(
+                    cls_id=1,
+                    cls_name="rider",
+                    conf=d.conf,
+                    xyxy=d.xyxy,
+                ))
+
+        bikes = _nms_same_class(bikes, 0.50)
+        persons = _nms_same_class(persons, 0.45)
+
+        return bikes, persons
+
+    def _filter_persons_as_riders(
+        self,
+        persons: List[Det],
+        bikes: List[Det],
+    ) -> List[Det]:
+        """
+        Convert COCO person boxes to rider boxes only if they are associated
+        with a motorcycle/two_wheeler. This avoids treating pedestrians as riders.
+        """
+        if not persons or not bikes:
+            return []
+
+        riders: List[Det] = []
+
+        for person in persons:
+            px1, py1, px2, py2 = person.xyxy
+            p_area = max(1e-6, (px2 - px1) * (py2 - py1))
+            p_cx = (px1 + px2) / 2.0
+            p_cy = (py1 + py2) / 2.0
+            p_bottom_y = py2
+
+            best_score = 0.0
+
+            for bike in bikes:
+                bx1, by1, bx2, by2 = bike.xyxy
+                bw = bx2 - bx1
+                bh = by2 - by1
+
+                # Expanded bike region captures rider above and around the bike.
+                ex_box = [
+                    bx1 - 0.25 * bw,
+                    by1 - 0.90 * bh,
+                    bx2 + 0.25 * bw,
+                    by2 + 0.35 * bh,
+                ]
+
+                overlap = _inter_area(person.xyxy, ex_box) / p_area
+
+                center_inside = (
+                    ex_box[0] <= p_cx <= ex_box[2]
+                    and ex_box[1] <= p_cy <= ex_box[3]
+                )
+
+                bottom_inside = (
+                    ex_box[0] <= p_cx <= ex_box[2]
+                    and ex_box[1] <= p_bottom_y <= ex_box[3]
+                )
+
+                score = overlap
+
+                if center_inside:
+                    score += 0.25
+
+                if bottom_inside:
+                    score += 0.25
+
+                best_score = max(best_score, score)
+
+            if best_score >= 0.18:
+                riders.append(person)
+
+        return _nms_same_class(riders, 0.45)
+
+    def _get_bikes_and_riders(
+        self, img: np.ndarray
+    ) -> Tuple[List[Det], List[Det]]:
+        # ------------------------------------------------------------
+        # 1. Original normal detection path
+        # ------------------------------------------------------------
+        raw = self._predict_yolo(self.full_model, img, self.full_imgsz, self.full_conf)
+
+        bikes = _nms_same_class(
+            [d for d in raw if self._bike_category(d) == "bike"],
+            0.50,
+        )
+
+        riders = _nms_same_class(
+            [d for d in raw if self._rider_category(d) == "rider"],
+            0.45,
+        )
+
+        # If the old detector already works, do not change anything.
+        if bikes and riders:
+            return bikes, riders
+
+        # ------------------------------------------------------------
+        # 2. Recall fallback using the same custom full_detector
+        # ------------------------------------------------------------
+        recall_bikes, recall_riders = self._get_full_detector_recall_candidates(img)
+
+        if not bikes and recall_bikes:
+            bikes = recall_bikes
+
+        if not riders and recall_riders:
+            riders = recall_riders
+
+        if bikes and riders:
+            return bikes, riders
+
+        # ------------------------------------------------------------
+        # 3. COCO fallback using yolo11n.pt
+        # ------------------------------------------------------------
+        coco_bikes, coco_persons = self._get_coco_candidates(img)
+
+        if not bikes and coco_bikes:
+            bikes = coco_bikes
+
+        if not riders and coco_persons and bikes:
+            riders = self._filter_persons_as_riders(coco_persons, bikes)
+
+        return bikes, riders
+
+    # -------------------------------------------------------------------------
+    # Step 2 — Associate riders to bikes
+    # -------------------------------------------------------------------------
+
+    def _associate_riders(
+        self,
+        bikes: List[Det],
+        riders: List[Det],
+        img_shape: Tuple[int, ...],
+    ) -> Dict[int, List[Det]]:
+        """
+        Associate rider boxes to the most likely two-wheeler.
+
+        Fixes over/under-counting by using more than raw IoU:
+          - overlap with expanded bike region,
+          - rider center inside expanded region,
+          - rider bottom point near/on the bike,
+          - vertical sanity check so far pedestrians are not attached.
+        """
+        rider_map: Dict[int, List[Det]] = {i: [] for i in range(len(bikes))}
+        if not bikes or not riders:
+            return rider_map
+
+        for rider in riders:
+            rx1, ry1, rx2, ry2 = rider.xyxy
+            rw, rh = max(1.0, rx2 - rx1), max(1.0, ry2 - ry1)
+            rider_area = max(1e-6, rw * rh)
+            rcx = (rx1 + rx2) / 2.0
+            rcy = (ry1 + ry2) / 2.0
+            rbottom = ry2
+
+            best_idx, best_score = -1, 0.0
+
+            for i, bike in enumerate(bikes):
+                bx1, by1, bx2, by2 = bike.xyxy
+                bw, bh = max(1.0, bx2 - bx1), max(1.0, by2 - by1)
+
+                # Expanded rider-support region. Riders sit above the bike,
+                # and pillion riders can extend slightly outside left/right.
+                support = [
+                    bx1 - 0.20 * bw,
+                    by1 - 0.85 * bh,
+                    bx2 + 0.20 * bw,
+                    by2 + 0.30 * bh,
+                ]
+
+                overlap_ratio = _inter_area(rider.xyxy, support) / rider_area
+
+                center_inside = (
+                    support[0] <= rcx <= support[2] and
+                    support[1] <= rcy <= support[3]
+                )
+                bottom_inside = (
+                    support[0] <= rcx <= support[2] and
+                    support[1] <= rbottom <= support[3]
+                )
+
+                # A true rider usually has lower body/bottom near the bike area.
+                bottom_near_bike = (
+                    bx1 - 0.25 * bw <= rcx <= bx2 + 0.25 * bw and
+                    by1 - 0.35 * bh <= rbottom <= by2 + 0.45 * bh
+                )
+
+                score = overlap_ratio
+                if center_inside:
+                    score += 0.20
+                if bottom_inside:
+                    score += 0.25
+                if bottom_near_bike:
+                    score += 0.25
+
+                # Penalize people far above/below the motorcycle.
+                if rbottom < by1 - 0.55 * bh or ry1 > by2 + 0.35 * bh:
+                    score -= 0.35
+
+                if score > best_score:
+                    best_score, best_idx = score, i
+
+            # Slightly stricter threshold than old 0.10; this reduces pedestrians
+            # and duplicate weak rider boxes from being attached to a bike.
+            if best_idx >= 0 and best_score >= 0.28:
+                rider_map[best_idx].append(rider)
+
+        return rider_map
+
+    # -------------------------------------------------------------------------
+    # Step 3a — Helmet detection per bike
+    # -------------------------------------------------------------------------
+
+    def _resolve_head_detections(
+        self,
+        helmet_dets: List[Det],
+        no_helmet_dets: List[Det],
+        bike_box: List[float],
+    ) -> Tuple[List[Det], List[Det]]:
+        """
+        Clean helmet/no_helmet detections for one bike.
+
+        Fixes common issues:
+          1. Same head detected as both helmet and no_helmet.
+          2. Duplicate head boxes.
+          3. Head detections from nearby pedestrians/bikes inside the crop.
+        """
+        bx1, by1, bx2, by2 = bike_box
+        bw, bh = max(1.0, bx2 - bx1), max(1.0, by2 - by1)
+        head_region = [
+            bx1 - 0.25 * bw,
+            by1 - 0.95 * bh,
+            bx2 + 0.25 * bw,
+            by2 + 0.20 * bh,
+        ]
+
+        candidates: List[Det] = []
+        for d in helmet_dets:
+            candidates.append(Det(d.cls_id, "helmet", d.conf, d.xyxy))
+        for d in no_helmet_dets:
+            candidates.append(Det(d.cls_id, "no_helmet", d.conf, d.xyxy))
+
+        # Filter heads not associated with this bike region.
+        filtered: List[Det] = []
+        for d in candidates:
+            x1, y1, x2, y2 = d.xyxy
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            center_inside = (head_region[0] <= cx <= head_region[2] and head_region[1] <= cy <= head_region[3])
+            overlap_ratio = _inter_area(d.xyxy, head_region) / max(1e-6, d.area)
+            if center_inside or overlap_ratio > 0.35:
+                filtered.append(d)
+
+        # Cross-class NMS: if helmet and no_helmet overlap heavily, keep only one.
+        # We give a tiny preference to no_helmet because missing a violation hurts,
+        # but a clearly stronger helmet detection still wins.
+        filtered = sorted(
+            filtered,
+            key=lambda d: (float(d.conf) + (0.03 if _norm_name(d.cls_name) == "no_helmet" else 0.0)),
+            reverse=True,
+        )
+
+        kept: List[Det] = []
+        for d in filtered:
+            duplicate = False
+            for k in kept:
+                inter = _inter_area(d.xyxy, k.xyxy)
+                min_area = max(1e-6, min(d.area, k.area))
+                containment = inter / min_area
+                if _iou(d.xyxy, k.xyxy) > 0.35 or containment > 0.70:
+                    duplicate = True
+                    break
+            if not duplicate:
+                kept.append(d)
+
+        clean_helmet = [d for d in kept if _norm_name(d.cls_name) == "helmet"]
+        clean_no_helmet = [d for d in kept if _norm_name(d.cls_name) == "no_helmet"]
+
+        return clean_helmet, clean_no_helmet
+
+    def _detect_helmets_on_bike(
+        self,
+        img: np.ndarray,
+        bike_box: List[float],
+    ) -> Tuple[List[Det], List[Det]]:
+        # Keep strong upward padding: rider heads/no-helmet regions often sit
+        # well above the motorcycle body box. This recovers violations that
+        # are missed by tight bike crops.
+        bike_crop, offset = _crop_box(img, bike_box, xpad=0.30, ypad=0.75)
+        raw = self._predict_yolo(
+            self.helmet_model, bike_crop, self.helmet_imgsz, self.helmet_conf,
+        )
+
+        helmet_dets, no_helmet_dets = [], []
+        for d in raw:
+            cat = self._helmet_category(d)
+            if cat == "helmet":
+                helmet_dets.append(_offset_det(d, offset, "helmet"))
+            elif cat == "no_helmet":
+                no_helmet_dets.append(_offset_det(d, offset, "no_helmet"))
+
+        helmet_dets    = _nms_same_class(helmet_dets,    0.38)
+        no_helmet_dets = _nms_same_class(no_helmet_dets, 0.38)
+
+        # Resolve duplicate/conflicting head detections before using them for
+        # both helmet violation count and rider count.
+        helmet_dets, no_helmet_dets = self._resolve_head_detections(
+            helmet_dets, no_helmet_dets, bike_box
+        )
+
+        return helmet_dets, no_helmet_dets
+
+    # -------------------------------------------------------------------------
+    # Step 3b — Rider counting (pose > bbox fallback)
+    # -------------------------------------------------------------------------
+
+    def _count_riders_via_pose(
+        self, img: np.ndarray, bike_box: List[float]
+    ) -> Optional[int]:
+        if self.pose_model is None:
+            return None
+        bike_crop, _ = _crop_box(img, bike_box, xpad=0.15, ypad=0.50)
+        if bike_crop.size == 0:
+            return None
+        try:
+            results = self.pose_model.predict(
+                bike_crop,
+                imgsz=self.pose_imgsz,
+                conf=self.pose_conf,
+                verbose=False,
+            )
+            count = sum(
+                1 for r in results
+                if r.keypoints is not None and len(r.keypoints) > 0
+            )
+            return count if count > 0 else None
+        except Exception:
+            return None
 
 
-#             [d for d in raw if self._rider_category(d) == "rider"],
-#             0.45,
 #         )
 # 
-#         return bikes, riders
+#         return helmet_dets, no_helmet_dets
 # 
-#     def _get_coco_candidates(
-#         self, img: np.ndarray
-#     ) -> Tuple[List[Det], List[Det]]:
-#         """
-#         COCO fallback using models/yolo11n.pt.
+#     # -------------------------------------------------------------------------
+#     # Step 3b — Rider counting (pose > bbox fallback)
+#     # -------------------------------------------------------------------------
 # 
-#         COCO classes used:
-#           person     -> possible rider
-#           motorcycle -> two_wheeler
-# 
-#         Person detections are filtered later using bike overlap so pedestrians
-#         do not directly become riders.
-#         """
-#         if self.coco_model is None:
-#             return [], []
-# 
-#         raw = self._predict_yolo(
-#             self.coco_model,
-#             img,
-#             imgsz=max(self.full_imgsz, 960),
-#             conf=0.15,
-#         )
-# 
-#         bikes: List[Det] = []
+#     def _count_riders_via_pose(
+#         self, img: np.ndarray, bike_box: List[float]
+#     ) -> Optional[int]:
+#         if self.pose_model is None:
+#             return None
+#         bike_crop, _ = _crop_box(img, bike_box, xpad=0.15, ypad=0.50)
+#         if bike_crop.size == 0:
+#             return None
+#         try:
+#             results = self.pose_model.predict(
+#                 bike_crop,
+#                 imgsz=self.pose_imgsz,
+#                 conf=self.pose_conf,
+#                 verbose=False,
+#             )
+#             count = sum(
+#                 1 for r in results
+#                 if r.keypoints is not None and len(r.keypoints) > 0
+#             )
+#             return count if count > 0 else None
+#         except Exception:
+#             return None
