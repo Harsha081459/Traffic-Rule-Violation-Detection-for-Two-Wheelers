@@ -1052,34 +1052,353 @@ class TrafficViolationDetector:
         except Exception:
             return None
 
+    def _count_riders_for_bike(
+        self,
+        img: np.ndarray,
+        bike: Det,
+        matched_riders: List[Det],
+        helmet_dets: List[Det],
+        no_helmet_dets: List[Det],
+    ) -> int:
+        pose_count = self._count_riders_via_pose(img, bike.xyxy)
+        if pose_count is not None:
+            return pose_count
 
-#         )
-# 
-#         return helmet_dets, no_helmet_dets
-# 
-#     # -------------------------------------------------------------------------
-#     # Step 3b — Rider counting (pose > bbox fallback)
-#     # -------------------------------------------------------------------------
-# 
-#     def _count_riders_via_pose(
-#         self, img: np.ndarray, bike_box: List[float]
-#     ) -> Optional[int]:
-#         if self.pose_model is None:
-#             return None
-#         bike_crop, _ = _crop_box(img, bike_box, xpad=0.15, ypad=0.50)
-#         if bike_crop.size == 0:
-#             return None
-#         try:
-#             results = self.pose_model.predict(
-#                 bike_crop,
-#                 imgsz=self.pose_imgsz,
-#                 conf=self.pose_conf,
-#                 verbose=False,
-#             )
-#             count = sum(
-#                 1 for r in results
-#                 if r.keypoints is not None and len(r.keypoints) > 0
-#             )
-#             return count if count > 0 else None
-#         except Exception:
-#             return None
+        # ------------------------------------------------------------
+        # Duplicate / merged rider-box handling.
+        #
+        # Why this is needed:
+        # In crowded bikes, the full detector can sometimes output an
+        # extra rider box that overlaps an existing rider or covers multiple
+        # heads. In those cases len(matched_riders) can become 4 even when
+        # the actual visible heads are 3.
+        #
+        # Fix:
+        # 1. De-duplicate rider boxes using IoU and containment.
+        # 2. If one rider box contains 2+ helmet/no_helmet heads, treat it
+        #    as a merged duplicate box.
+        # 3. If duplicate evidence exists and head count is lower, trust
+        #    the head count.
+        # ------------------------------------------------------------
+        riders = sorted(
+            matched_riders,
+            key=lambda r: (float(r.conf), -float(r.area)),
+            reverse=True,
+        )
+
+        deduped_riders: List[Det] = []
+        duplicate_evidence = False
+
+        for r in riders:
+            is_duplicate = False
+
+            for k in deduped_riders:
+                inter = _inter_area(r.xyxy, k.xyxy)
+                min_area = max(1e-6, min(r.area, k.area))
+                iou = _iou(r.xyxy, k.xyxy)
+                containment = inter / min_area
+
+                # IoU catches normal duplicate boxes.
+                # containment catches cases where one box mostly contains
+                # another rider box.
+                if iou > 0.38 or containment > 0.72:
+                    is_duplicate = True
+                    duplicate_evidence = True
+                    break
+
+            if not is_duplicate:
+                deduped_riders.append(r)
+
+        heads = helmet_dets + no_helmet_dets
+        head_count = len(heads)
+
+        # If one rider bbox covers multiple head detections, it is usually
+        # a merged/duplicate rider box rather than one extra rider.
+        if head_count >= 2 and deduped_riders:
+            pruned_riders: List[Det] = []
+
+            for r in deduped_riders:
+                rx1, ry1, rx2, ry2 = r.xyxy
+                heads_inside = 0
+
+                for hdet in heads:
+                    hx1, hy1, hx2, hy2 = hdet.xyxy
+                    hcx = (hx1 + hx2) / 2.0
+                    hcy = (hy1 + hy2) / 2.0
+
+                    center_inside = (
+                        rx1 <= hcx <= rx2 and
+                        ry1 <= hcy <= ry2
+                    )
+                    head_overlap = _inter_area(r.xyxy, hdet.xyxy) / max(1e-6, hdet.area)
+
+                    if center_inside or head_overlap > 0.25:
+                        heads_inside += 1
+
+                if heads_inside >= 2:
+                    duplicate_evidence = True
+                    continue
+
+                pruned_riders.append(r)
+
+            # Use pruning only when it leaves at least one rider box.
+            if pruned_riders:
+                deduped_riders = pruned_riders
+
+        bbox_count = len(deduped_riders)
+
+        # ------------------------------------------------------------
+        # Count fusion.
+        # ------------------------------------------------------------
+        if head_count > 0:
+            if bbox_count == 0:
+                return head_count
+
+            # This fixes the case from your screenshot:
+            # bbox_count=4, no_helmet/helmet heads=3, and the extra rider
+            # box is duplicate/merged evidence → return 3.
+            if duplicate_evidence and bbox_count > head_count:
+                return head_count
+
+            # Normally keep the larger signal to avoid missing riders.
+            return max(bbox_count, head_count)
+
+        # No head detections: fall back to de-duplicated rider boxes.
+        return max(bbox_count, 1 if matched_riders else 0)
+
+    # -------------------------------------------------------------------------
+    # Step 4 — License plate OCR
+    # -------------------------------------------------------------------------
+
+    def _read_plate_easyocr(self, plate_crop: np.ndarray) -> List[Tuple[str, float]]:
+        """
+        Run EasyOCR on multiple preprocessed variants of the plate crop.
+
+        EasyOCR with paragraph=False returns one item per text region.
+        For a 2-line Indian plate ("AP07" on line 1, "AB1234" on line 2)
+        we sort regions top-to-bottom by centroid Y and concatenate to get
+        "AP07AB1234".
+        We also keep individual fragment candidates for the voter.
+        """
+        if self.ocr is None or plate_crop is None or plate_crop.size == 0:
+            return []
+
+        allow = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        candidates: List[Tuple[str, float]] = []
+
+        for variant in _make_plate_variants(plate_crop)[: self.max_ocr_variants]:
+            try:
+                result = self.ocr.readtext(
+                    variant,
+                    detail=1,           # return (bbox, text, conf)
+                    paragraph=False,    # separate regions — needed for multi-line plates
+                    allowlist=allow,
+                    decoder="greedy",   # faster than beamsearch
+                    batch_size=1,
+                )
+                if not result:
+                    continue
+
+                # Full plate string: sort top→bottom and concatenate all regions.
+                full_text, full_conf = _easyocr_regions_to_plate(result)
+                if len(full_text) >= 4:
+                    candidates.append((full_text, full_conf))
+                    # Good enough: avoid extra work in common case.
+                    if _INDIAN_PLATE_RE.match(full_text) or len(full_text) >= 7:
+                        return candidates
+
+                # Also add individual region fragments as shorter candidates.
+                for item in result:
+                    try:
+                        t = _clean_plate_text(item[1])
+                        c = float(item[2])
+                        if len(t) >= 3:
+                            candidates.append((t, c))
+                    except Exception:
+                        continue
+
+            except Exception:
+                continue
+
+        return candidates
+
+    def _detect_plate_text(
+        self, img: np.ndarray, bike_box: List[float]
+    ) -> str:
+        """
+        Locate the license plate in the bike region, then OCR it to obtain
+        the full plate string (e.g. "AP07AB1234").
+        """
+        # Wider bike crop improves plate recall with only a small speed cost.
+        bike_crop, bike_offset = _crop_box(img, bike_box, xpad=0.35, ypad=0.35)
+
+        raw_dets = self._predict_yolo(
+            self.plate_model, bike_crop, self.plate_imgsz, self.plate_conf,
+        )
+
+        plates: List[Det] = []
+        crop_h, crop_w = bike_crop.shape[:2]
+        crop_area = max(1.0, float(crop_h * crop_w))
+
+        for d in raw_dets:
+            if self._plate_category(d) != "plate":
+                continue
+
+            x1, y1, x2, y2 = d.xyxy
+            pw, ph = max(1.0, x2 - x1), max(1.0, y2 - y1)
+            aspect = pw / ph
+            rel_area = (pw * ph) / crop_area
+
+            # Remove absurd plate boxes / text-like false positives.
+            # Two-line motorcycle plates can be nearly square, so keep a
+            # wide aspect range but reject impossible boxes.
+            if aspect < 0.45 or aspect > 8.5 or rel_area > 0.45:
+                continue
+
+            plates.append(_offset_det(d, bike_offset, "plate"))
+
+        plates = _nms_same_class(plates, 0.30)
+
+        if not plates:
+            return ""
+
+        plates = sorted(plates, key=lambda d: (d.conf, d.area), reverse=True)
+
+        all_candidates: List[Tuple[str, float]] = []
+
+        for plate in plates[: self.max_plates_to_ocr]:
+            # More padding around the plate prevents cutting characters.
+            plate_crop, _ = _crop_box(img, plate.xyxy, xpad=0.22, ypad=0.45)
+            cands = self._read_plate_easyocr(plate_crop)
+            all_candidates.extend(cands)
+
+            voted = _vote_plate(all_candidates)
+            if _INDIAN_PLATE_RE.match(voted):
+                return voted
+
+        return _vote_plate(all_candidates)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def predict(self, image_path: str) -> dict:
+        """
+        Process a single street image and return all traffic violations.
+
+        Strict output format (evaluated by auto-grader):
+        {
+            "violations": [
+                {
+                    "num_riders":        int,
+                    "helmet_violations": int,
+                    "license_plate":     str
+                }
+            ]
+        }
+        No extra keys — only "violations".
+        """
+        try:
+            img = cv2.imread(str(image_path))
+            if img is None:
+                return {"violations": []}
+
+            bikes, riders = self._get_bikes_and_riders(img)
+            if not bikes:
+                return {"violations": []}
+
+            # Process most confident/largest bikes first to stay under the 5s guideline.
+            bikes = sorted(bikes, key=lambda d: (d.conf, d.area), reverse=True)[: self.max_bikes_to_process]
+            rider_map = self._associate_riders(bikes, riders, img.shape)
+
+            violations: List[Dict[str, Any]] = []
+
+            for i, bike in enumerate(bikes):
+                matched_riders = rider_map.get(i, [])
+
+                helmet_dets, no_helmet_dets = self._detect_helmets_on_bike(
+                    img, bike.xyxy,
+                )
+
+                rider_count = self._count_riders_for_bike(
+                    img, bike, matched_riders, helmet_dets, no_helmet_dets,
+                )
+
+                # A bike cannot have more helmet violations than riders.
+                # This also prevents one duplicate no_helmet box from inflating output.
+                helmet_violations = min(len(no_helmet_dets), max(rider_count, 0))
+
+                if rider_count <= 2 and helmet_violations == 0:
+                    continue
+
+                plate_text = self._detect_plate_text(img, bike.xyxy)
+
+                violations.append({
+                    "num_riders":        int(rider_count),
+                    "helmet_violations": int(helmet_violations),
+                    "license_plate":     str(plate_text),
+                })
+
+            return {"violations": violations}
+
+        except Exception:
+            return {"violations": []}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Optional debug helper (not called by evaluator)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def predict_debug(self, image_path: str) -> dict:
+        """
+        Extended output for visual debugging.  NOT used by the evaluator.
+
+        Returns the same violations list plus per-bike bounding boxes,
+        raw helmet/rider detections, violation flags, and inference time.
+        """
+        t_start = time.perf_counter()
+
+        img = cv2.imread(str(image_path))
+        if img is None:
+            return {"violations": [], "debug": [], "inference_time_sec": 0.0}
+
+        h, w = img.shape[:2]
+        bikes, riders = self._get_bikes_and_riders(img)
+        bikes = sorted(bikes, key=lambda d: (d.conf, d.area), reverse=True)[: self.max_bikes_to_process]
+        rider_map     = self._associate_riders(bikes, riders, img.shape)
+
+        violations: List[Dict[str, Any]] = []
+        debug_items: List[Dict[str, Any]] = []
+
+        for i, bike in enumerate(bikes):
+            matched_riders = rider_map.get(i, [])
+            helmet_dets, no_helmet_dets = self._detect_helmets_on_bike(img, bike.xyxy)
+
+            rider_count       = self._count_riders_for_bike(
+                img, bike, matched_riders, helmet_dets, no_helmet_dets,
+            )
+            helmet_violations = min(len(no_helmet_dets), max(rider_count, 0))
+            is_violation      = rider_count > 2 or helmet_violations > 0
+
+            plate_text = self._detect_plate_text(img, bike.xyxy) if is_violation else ""
+
+            debug_items.append({
+                "bike_bbox":        _clip_box(bike.xyxy, w, h),
+                "rider_bboxes":     [_clip_box(r.xyxy, w, h) for r in matched_riders],
+                "helmet_bboxes":    [_clip_box(d.xyxy, w, h) for d in helmet_dets],
+                "no_helmet_bboxes": [_clip_box(d.xyxy, w, h) for d in no_helmet_dets],
+                "num_riders":       int(rider_count),
+                "helmet_violations":int(helmet_violations),
+                "license_plate":    str(plate_text),
+                "is_violation":     bool(is_violation),
+                "pose_model_used":  self.pose_model is not None,
+            })
+
+            if is_violation:
+                violations.append({
+                    "num_riders":        int(rider_count),
+                    "helmet_violations": int(helmet_violations),
+                    "license_plate":     str(plate_text),
+                })
+
+        elapsed = round(time.perf_counter() - t_start, 3)
+        return {"violations": violations, "debug": debug_items, "inference_time_sec": elapsed}
