@@ -98,35 +98,85 @@ async function uploadToAPI(file, imgData) {
         console.error("Error calling API:", error);
         alert("Failed to analyze image. Ensure the FastAPI server is running.");
     } finally {
+        // Only hide the loader if this specific request wasn't aborted
+        if (currentController && currentController.signal === signal) {
+            loader.style.display = 'none';
+        }
+    }
+}
+
+function drawResults(data, img) {
+    // Redraw image to clear any previous drawings if re-called
+    ctx.drawImage(img, 0, 0);
+    
+    if (!data.debug) return;
+
+    data.debug.forEach((item, index) => {
+        const isViolation = item.is_violation;
+        const bikeColor = isViolation ? '#ff3366' : '#00ffcc';
+        
+        // Draw bike box
+        drawBox(item.bike_bbox, bikeColor, 4);
+        
+        // Draw label
+        const labelText = `Bike ${index + 1} | Riders: ${item.num_riders} | No Helmet: ${item.helmet_violations}`;
+        drawLabel(item.bike_bbox[0], item.bike_bbox[1], labelText, bikeColor);
+        
+        // Draw rider boxes
+        item.rider_bboxes.forEach(box => {
+            drawBox(box, '#facc15', 2);
+            drawLabel(box[0], box[1], 'Rider', '#facc15', 14);
+        });
+        
+        // Draw helmet boxes
+        item.helmet_bboxes.forEach(box => {
+            drawBox(box, '#00ffcc', 2);
+            drawLabel(box[0], box[1], 'Helmet', '#00ffcc', 14);
+        });
+        
+        // Draw no_helmet boxes
+        item.no_helmet_bboxes.forEach(box => {
+            drawBox(box, '#ff3366', 2);
+            drawLabel(box[0], box[1], 'No Helmet', '#ff3366', 14);
+        });
+    });
+}
+
+function drawBox(box, color, lineWidth) {
+    if (!box || box.length !== 4) return;
+    const [x1, y1, x2, y2] = box;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.beginPath();
 
 
-#     currentController = new AbortController();
-#     const signal = currentController.signal;
-# 
-#     loader.style.display = 'flex';
-#     
-#     const formData = new FormData();
-#     formData.append('file', file);
-#     
-#     try {
-#         const response = await fetch('/predict', {
-#             method: 'POST',
-#             body: formData,
-#             signal: signal
+#         // Draw label
+#         const labelText = `Bike ${index + 1} | Riders: ${item.num_riders} | No Helmet: ${item.helmet_violations}`;
+#         drawLabel(item.bike_bbox[0], item.bike_bbox[1], labelText, bikeColor);
+#         
+#         // Draw rider boxes
+#         item.rider_bboxes.forEach(box => {
+#             drawBox(box, '#facc15', 2);
+#             drawLabel(box[0], box[1], 'Rider', '#facc15', 14);
 #         });
 #         
-#         if (!response.ok) {
-#             throw new Error(`Server error: ${response.status}`);
-#         }
+#         // Draw helmet boxes
+#         item.helmet_bboxes.forEach(box => {
+#             drawBox(box, '#00ffcc', 2);
+#             drawLabel(box[0], box[1], 'Helmet', '#00ffcc', 14);
+#         });
 #         
-#         const data = await response.json();
-#         drawResults(data, imgData);
-#         updateStats(data);
-#     } catch (error) {
-#         if (error.name === 'AbortError') {
-#             console.log('Previous request aborted for new upload.');
-#             return;
-#         }
-#         console.error("Error calling API:", error);
-#         alert("Failed to analyze image. Ensure the FastAPI server is running.");
-#     } finally {
+#         // Draw no_helmet boxes
+#         item.no_helmet_bboxes.forEach(box => {
+#             drawBox(box, '#ff3366', 2);
+#             drawLabel(box[0], box[1], 'No Helmet', '#ff3366', 14);
+#         });
+#     });
+# }
+# 
+# function drawBox(box, color, lineWidth) {
+#     if (!box || box.length !== 4) return;
+#     const [x1, y1, x2, y2] = box;
+#     ctx.strokeStyle = color;
+#     ctx.lineWidth = lineWidth;
+#     ctx.beginPath();
