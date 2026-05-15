@@ -148,35 +148,54 @@ function drawBox(box, color, lineWidth) {
     ctx.strokeStyle = color;
     ctx.lineWidth = lineWidth;
     ctx.beginPath();
+    ctx.rect(x1, y1, x2 - x1, y2 - y1);
+    ctx.stroke();
+}
 
+function drawLabel(x, y, text, color, fontSize = 18) {
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    const textMetrics = ctx.measureText(text);
+    const textWidth = textMetrics.width;
+    const textHeight = fontSize;
+    
+    // Background for text
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y - textHeight - 8, textWidth + 10, textHeight + 8);
+    
+    // Text
+    ctx.fillStyle = '#000000';
+    ctx.fillText(text, x + 5, y - 6);
+}
 
-#         // Draw label
-#         const labelText = `Bike ${index + 1} | Riders: ${item.num_riders} | No Helmet: ${item.helmet_violations}`;
-#         drawLabel(item.bike_bbox[0], item.bike_bbox[1], labelText, bikeColor);
-#         
-#         // Draw rider boxes
-#         item.rider_bboxes.forEach(box => {
-#             drawBox(box, '#facc15', 2);
-#             drawLabel(box[0], box[1], 'Rider', '#facc15', 14);
-#         });
-#         
-#         // Draw helmet boxes
-#         item.helmet_bboxes.forEach(box => {
-#             drawBox(box, '#00ffcc', 2);
-#             drawLabel(box[0], box[1], 'Helmet', '#00ffcc', 14);
-#         });
-#         
-#         // Draw no_helmet boxes
-#         item.no_helmet_bboxes.forEach(box => {
-#             drawBox(box, '#ff3366', 2);
-#             drawLabel(box[0], box[1], 'No Helmet', '#ff3366', 14);
-#         });
-#     });
-# }
-# 
-# function drawBox(box, color, lineWidth) {
-#     if (!box || box.length !== 4) return;
-#     const [x1, y1, x2, y2] = box;
-#     ctx.strokeStyle = color;
-#     ctx.lineWidth = lineWidth;
-#     ctx.beginPath();
+function updateStats(data) {
+    statsPanel.style.display = 'block';
+    statGrid.innerHTML = '';
+    
+    if (!data.debug || data.debug.length === 0) {
+        statGrid.innerHTML = '<p style="color: var(--text-muted)">No two-wheelers detected in this image.</p>';
+        return;
+    }
+    
+    data.debug.forEach((item, index) => {
+        const isViolation = item.is_violation;
+        const cardClass = isViolation ? 'stat-card violation' : 'stat-card safe';
+        const statusText = isViolation ? 'Violation Detected' : 'Safe / Legal';
+        
+        let plateHtml = '';
+        if (item.license_plate) {
+            plateHtml = `<div class="plate-badge">${item.license_plate}</div>`;
+        } else if (isViolation) {
+            plateHtml = `<div style="font-size: 0.8rem; color: #ff3366; margin-top: 5px;">Plate not readable</div>`;
+        }
+        
+        const html = `
+            <div class="${cardClass}">
+                <div class="stat-label">Bike ${index + 1} • ${statusText}</div>
+                <div class="stat-value">Riders: ${item.num_riders}</div>
+                <div class="stat-value" style="font-size: 1rem; color: var(--text-muted);">Helmet Violations: ${item.helmet_violations}</div>
+                ${plateHtml}
+            </div>
+        `;
+        statGrid.innerHTML += html;
+    });
+}
