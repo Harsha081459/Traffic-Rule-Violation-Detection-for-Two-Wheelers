@@ -134,34 +134,47 @@ docker run -p 8000:7860 traffic-violation-ai
 
 ## 📁 Project Structure
 
+```
+traffic-violation-detection/
+├── app.py                        # FastAPI server — /predict endpoint
+├── solution_final_strong.py      # TrafficViolationDetector class (core pipeline)
+├── Dockerfile                    # Cloud deployment configuration
+├── requirements.txt              # Python dependencies
+│
+├── models/
+│   ├── full_detector.pt          # YOLOv11m — vehicle & rider detection
+│   ├── helmet_detector.pt        # YOLOv11s — helmet classification (finetuned)
+│   ├── plate_detector.pt         # YOLOv11n — license plate localization
+│   ├── yolo11n.pt                # COCO fallback detector
+│   └── easyocr/                  # Pre-downloaded OCR model weights
+│
+└── static/
+    ├── index.html                # Frontend layout
+    ├── style.css                 # Dark-mode glassmorphism CSS
+    └── main.js                   # Canvas rendering & fetch API logic
+```
 
-# 
-# ```bash
-# # Clone the repository
-# git clone https://github.com/Harsha081459/traffic-violation-detection.git
-# cd traffic-violation-detection
-# 
-# # Create and activate virtual environment
-# python -m venv .venv
-# .venv\Scripts\activate          # Windows (cmd)
-# # source .venv/bin/activate     # Linux / Mac
-# 
-# # Install dependencies
-# pip install -r requirements.txt
-# 
-# # Start the server
-# python app.py
-# ```
-# 
-# Open **http://localhost:8000** in your browser → drag and drop any traffic image.
-# 
-# ### Run with Docker
-# 
-# ```bash
-# docker build -t traffic-violation-ai .
-# docker run -p 8000:7860 traffic-violation-ai
-# ```
-# 
-# ---
-# 
-# ## 📁 Project Structure
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|:---|:---|
+| **Object Detection** | YOLOv11m / YOLOv11s / YOLOv11n (Ultralytics) |
+| **OCR** | EasyOCR |
+| **Backend** | FastAPI, Uvicorn |
+| **Frontend** | Vanilla HTML / CSS / JS, HTML5 Canvas |
+| **Deployment** | Docker, HuggingFace Spaces |
+| **Training** | PyTorch, Kaggle T4 GPUs |
+
+---
+
+## 📝 License
+
+MIT
+
+---
+
+<p align="center">
+  <b>⭐ Star this repo if you found it useful!</b>
+</p>
