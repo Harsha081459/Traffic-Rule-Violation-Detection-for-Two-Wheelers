@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Traffic Violations</title>
+    <meta name="description" content="AI powered traffic violation detection for two-wheelers.">
+    <!-- Google Fonts for Modern Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="background-elements">
+        <div class="glow-orb orb-1"></div>
+        <div class="glow-orb orb-2"></div>
+    </div>
+
+    <main class="container">
+        <header>
+            <h1 class="gradient-text">Traffic Sentinel AI</h1>
+            <p class="subtitle">Real-time deep learning for two-wheeler safety</p>
+        </header>
+
+        <div class="app-layout">
+            <section class="upload-section glass-panel">
+                <div class="upload-area" id="drop-zone">
+                    <input type="file" id="file-input" accept="image/*" hidden>
+                    <div class="upload-content">
+                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        <p>Drag & Drop an image here</p>
+                        <span class="or-text">or</span>
+                        <button class="btn-primary" id="browse-btn">Browse Files</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="results-section glass-panel">
+                <div class="canvas-container" id="canvas-container">
+                    <div class="placeholder-text" id="placeholder-text">Upload an image to see AI detection results</div>
+                    <canvas id="result-canvas"></canvas>
+                    <div class="loader" id="loader">
+                        <div class="spinner"></div>
+                        <span>Processing...</span>
+                    </div>
+                </div>
+                
+                <div class="stats-panel" id="stats-panel" style="display: none;">
+                    <h3>Analysis Results</h3>
+                    <div class="stat-grid" id="stat-grid">
+                        <!-- Stats will be injected here by JS -->
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script src="main.js"></script>
+</body>
+</html>
