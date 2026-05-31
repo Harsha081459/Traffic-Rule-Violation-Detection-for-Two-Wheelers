@@ -1,0 +1,22 @@
+# Inference-only requirements for Hugging Face Spaces deployment.
+# Stripped of all training / data-pipeline / remote-deployment deps.
+
+# ── API server ──────────────────────────────────────────────────────────────
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+pydantic==2.5.0
+
+# ── CV / ML inference ────────────────────────────────────────────────────────
+ultralytics==8.0.208
+opencv-python-headless==4.8.1.78
+easyocr==1.7.0
+onnxruntime==1.19.2
+pillow==10.1.0
+numpy==1.24.3
+torch==2.1.1
+torchvision==0.16.1
+
+# ── HF model download ────────────────────────────────────────────────────────
+huggingface_hub==0.19.4
+requests==2.31.0
