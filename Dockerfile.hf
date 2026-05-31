@@ -1,0 +1,51 @@
+# Dockerfile for Hugging Face Spaces (Docker SDK)
+# ---------------------------------------------------
+# Differences from local Dockerfile:
+#   - Port 7860 (HF Spaces default)
+#   - Inference-only dependencies (requirements_hf.txt)
+#   - Models downloaded at container startup from HF Hub
+#   - USER 1000 (uid HF Spaces requires)
+
+FROM python:3.10-slim
+
+# ── System dependencies (headless OpenCV + EasyOCR fonts) ────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libglib2.0-0 \
+        libsm6 \
+        libxrender1 \
+        libxext6 \
+        libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Non-root user required by HF Spaces ──────────────────────────────────────
+RUN useradd -m -u 1000 appuser
+
+WORKDIR /app
+
+# ── Python dependencies ───────────────────────────────────────────────────────
+COPY requirements_hf.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements_hf.txt && \
+    pip cache purge
+
+# ── Application code ──────────────────────────────────────────────────────────
+COPY --chown=appuser:appuser app.py              .
+COPY --chown=appuser:appuser download_models.py  .
+COPY --chown=appuser:appuser traffic_violation/  ./traffic_violation/
+COPY --chown=appuser:appuser static/             ./static/
+
+# Pre-create models dir so appuser can write into it at startup
+RUN mkdir -p /app/models && chown appuser:appuser /app/models
+
+USER appuser
+
+# Enable ONNX Runtime backend (onnxruntime>=1.17 required for HF Spaces kernel)
+ENV TV_USE_ONNX=1
+
+EXPOSE 7860
+
+HEALTHCHECK --interval=60s --timeout=15s --start-period=120s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/api/health')" || exit 1
+
+# Download models (from HF_MODEL_REPO), then start server on port 7860
+CMD ["sh", "-c", "python download_models.py && uvicorn app:app --host 0.0.0.0 --port 7860"]

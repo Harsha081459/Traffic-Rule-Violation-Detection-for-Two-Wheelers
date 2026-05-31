@@ -1,65 +1,186 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Traffic Violations</title>
-    <meta name="description" content="AI powered traffic violation detection for two-wheelers.">
-    <!-- Google Fonts for Modern Typography -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Traffic Sentinel AI</title>
+  <meta name="description" content="Real-time two-wheeler violation detection powered by YOLO11 + ONNX Runtime." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Outfit:wght@700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <div class="background-elements">
-        <div class="glow-orb orb-1"></div>
-        <div class="glow-orb orb-2"></div>
-    </div>
 
-    <main class="container">
-        <header>
-            <h1 class="gradient-text">Traffic Sentinel AI</h1>
-            <p class="subtitle">Real-time deep learning for two-wheeler safety</p>
-        </header>
+  <!-- Ambient background -->
+  <div class="bg-canvas" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+    <div class="grid-overlay"></div>
+  </div>
 
-        <div class="app-layout">
-            <section class="upload-section glass-panel">
-                <div class="upload-area" id="drop-zone">
-                    <input type="file" id="file-input" accept="image/*" hidden>
-                    <div class="upload-content">
-                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                            <polyline points="17 8 12 3 7 8"></polyline>
-                            <line x1="12" y1="3" x2="12" y2="15"></line>
-                        </svg>
-                        <p>Drag & Drop an image here</p>
-                        <span class="or-text">or</span>
-                        <button class="btn-primary" id="browse-btn">Browse Files</button>
-                    </div>
-                </div>
-            </section>
+  <!-- Toast notification shelf -->
+  <div id="toast-shelf" role="status" aria-live="polite"></div>
 
-            <section class="results-section glass-panel">
-                <div class="canvas-container" id="canvas-container">
-                    <div class="placeholder-text" id="placeholder-text">Upload an image to see AI detection results</div>
-                    <canvas id="result-canvas"></canvas>
-                    <div class="loader" id="loader">
-                        <div class="spinner"></div>
-                        <span>Processing...</span>
-                    </div>
-                </div>
-                
-                <div class="stats-panel" id="stats-panel" style="display: none;">
-                    <h3>Analysis Results</h3>
-                    <div class="stat-grid" id="stat-grid">
-                        <!-- Stats will be injected here by JS -->
-                    </div>
-                </div>
-            </section>
+  <div class="page-wrap">
+
+    <!-- ── Header ─────────────────────────────────────────────────── -->
+    <header class="site-header">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="16" cy="16" r="15" stroke="url(#g1)" stroke-width="2"/>
+            <path d="M9 20 L16 11 L23 20" stroke="url(#g1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="16" cy="22" r="2" fill="url(#g1)"/>
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#00f0ff"/>
+                <stop offset="100%" stop-color="#8b5cf6"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </span>
+        <span class="brand-name gradient-text">Traffic Sentinel AI</span>
+      </div>
+      <div class="header-meta">
+        <span class="badge badge-onnx" title="Powered by ONNX Runtime for 3–8× CPU speedup">
+          <span class="badge-dot"></span>ONNX Runtime
+        </span>
+        <span class="badge badge-model">YOLO11</span>
+      </div>
+    </header>
+
+    <!-- ── Hero line ───────────────────────────────────────────────── -->
+    <section class="hero" aria-label="Tagline">
+      <h1 class="hero-title gradient-text">Two-Wheeler Violation Detection</h1>
+      <p class="hero-sub">Upload a traffic image. AI detects riders, helmets, and reads license plates in under a second.</p>
+    </section>
+
+    <!-- ── Main app layout ─────────────────────────────────────────── -->
+    <main class="app-grid">
+
+      <!-- Left column: upload + controls -->
+      <aside class="panel panel-upload">
+
+        <!-- Drop zone -->
+        <div class="drop-zone" id="drop-zone" role="button" tabindex="0"
+             aria-label="Upload traffic image — drag and drop or click to browse">
+          <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/bmp" hidden />
+
+          <div class="dz-idle" id="dz-idle">
+            <div class="dz-icon-wrap">
+              <svg class="dz-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M24 8 L24 32" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                <path d="M14 18 L24 8 L34 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M8 36 L8 40 Q8 42 10 42 L38 42 Q40 42 40 40 L40 36" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <p class="dz-primary">Drag &amp; drop image here</p>
+            <p class="dz-secondary">JPEG · PNG · WebP · BMP &nbsp;·&nbsp; up to 15 MB</p>
+            <button class="btn-browse" id="browse-btn" type="button">Browse Files</button>
+          </div>
+
+          <div class="dz-preview hidden" id="dz-preview">
+            <img id="preview-thumb" src="" alt="Selected image preview" />
+            <div class="dz-preview-meta">
+              <span id="preview-name" class="preview-filename"></span>
+              <span id="preview-size" class="preview-filesize"></span>
+            </div>
+            <button class="btn-ghost btn-change" id="change-btn" type="button">Change image</button>
+          </div>
         </div>
+
+        <!-- Analyse button -->
+        <button class="btn-analyse" id="analyse-btn" type="button" disabled>
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+          Analyse Image
+        </button>
+
+        <!-- Processing steps (shown during inference) -->
+        <div class="steps-panel hidden" id="steps-panel" aria-live="polite">
+          <p class="steps-title">Processing…</p>
+          <ul class="steps-list">
+            <li class="step" id="step-upload">
+              <span class="step-icon">⬆</span><span>Uploading image</span>
+            </li>
+            <li class="step" id="step-detect">
+              <span class="step-icon">🔍</span><span>Detecting vehicles</span>
+            </li>
+            <li class="step" id="step-helmet">
+              <span class="step-icon">⛑</span><span>Analysing helmets</span>
+            </li>
+            <li class="step" id="step-plate">
+              <span class="step-icon">🔤</span><span>Reading plates</span>
+            </li>
+          </ul>
+        </div>
+
+      </aside>
+
+      <!-- Right column: canvas + results -->
+      <section class="panel panel-results">
+
+        <!-- Canvas area -->
+        <div class="canvas-wrap" id="canvas-wrap">
+
+          <!-- Placeholder -->
+          <div class="canvas-placeholder" id="canvas-placeholder">
+            <svg viewBox="0 0 80 60" fill="none" xmlns="http://www.w3.org/2000/svg" class="ph-illustration" aria-hidden="true">
+              <rect x="4" y="4" width="72" height="52" rx="6" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3"/>
+              <circle cx="25" cy="22" r="7" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M4 44 L22 30 L34 40 L48 26 L76 44" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <p>Upload an image to see AI detection results</p>
+          </div>
+
+          <!-- Loading skeleton overlay -->
+          <div class="canvas-skeleton hidden" id="canvas-skeleton" aria-hidden="true">
+            <div class="sk-img"></div>
+            <div class="sk-pulse-ring"></div>
+          </div>
+
+          <!-- The real canvas -->
+          <canvas id="result-canvas" aria-label="Detection result canvas"></canvas>
+
+          <!-- Inference time badge -->
+          <div class="inference-badge hidden" id="inference-badge" title="Wall-clock inference time">
+            <svg viewBox="0 0 16 16" fill="currentColor" class="badge-lightning">
+              <path d="M9.5 0L2 9h6l-1.5 7L14 7H8L9.5 0z"/>
+            </svg>
+            <span id="inference-ms">—</span>
+          </div>
+
+        </div>
+
+        <!-- Results cards -->
+        <div class="results-area hidden" id="results-area">
+          <div class="results-header">
+            <h2 class="results-title">Detection Results</h2>
+            <div class="summary-chips" id="summary-chips"></div>
+          </div>
+          <div class="cards-grid" id="cards-grid"></div>
+        </div>
+
+        <!-- No detections state -->
+        <div class="no-detections hidden" id="no-detections">
+          <span class="nd-icon">✓</span>
+          <p>No two-wheelers or violations detected in this image.</p>
+        </div>
+
+      </section>
+
     </main>
 
-    <script src="main.js"></script>
+    <!-- ── Footer ──────────────────────────────────────────────────── -->
+    <footer class="site-footer">
+      <span>Traffic Sentinel AI &nbsp;·&nbsp; YOLO11 + ONNX Runtime &nbsp;·&nbsp; Phase 3</span>
+    </footer>
+
+  </div><!-- /page-wrap -->
+
+  <script src="main.js"></script>
 </body>
 </html>

@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  traffic-sentinel-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: traffic-sentinel-ai
+    ports:
+      - "8000:8000"
+    environment:
+      - TV_USE_ONNX=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./models:/app/models:ro
+      - ./static:/app/static:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  models:
+  static:

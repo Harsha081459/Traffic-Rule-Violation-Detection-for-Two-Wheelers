@@ -1,17 +1,53 @@
-# Virtual environment
-.venv/
-
-# Python cache
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
 
-# Large training artifacts
-runs/
-runs.zip
+# Distribution / packaging
+.egg-info/
+dist/
+build/
+*.egg
 
-# Model weights (too large for GitHub, hosted on HuggingFace)
-models/
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
 
-# OS files
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-*
 .DS_Store
-Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data & models
+*.pt
+*.pth
+*.onnx
+*.zip
+data/
+/home/
+
+# Logs
+*.log
+logs/
+
+# Docker
+.dockerignore
+
+# Project-specific
+sample.jpg
+_make_sample.py
+_ssh_probe.py
+*.pyc
