@@ -2,6 +2,7 @@
 
 > Real-time two-wheeler violation detection powered by **YOLOv11 + ONNX Runtime**.  
 > Detects riders without helmets, over-loaded bikes (>2 riders), and reads license plates via EasyOCR.
+**🚀 Live Public Application:** [https://hv-123-traffic-sentinel-ai.hf.space/](https://hv-123-traffic-sentinel-ai.hf.space/)
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-HF%20Spaces-yellow?logo=huggingface)](https://hv-123-traffic-sentinel-ai.hf.space/)
 [![Python 3.10](https://img.shields.io/badge/Python-3.10-blue?logo=python)](https://python.org)
