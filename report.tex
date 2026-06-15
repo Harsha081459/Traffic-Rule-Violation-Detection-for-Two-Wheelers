@@ -75,7 +75,7 @@
 \setlist[itemize]{noitemsep,topsep=2pt,leftmargin=*}
 \setlist[enumerate]{noitemsep,topsep=2pt,leftmargin=*}
 \setlength{\parskip}{1pt}
-\graphicspath{{./runs/remote/}}
+\graphicspath{{./figures/}}
 \tolerance=1500
 \hbadness=1500
 
@@ -88,8 +88,11 @@
   {\LARGE\bfseries Traffic Sentinel AI}\\[4pt]
   {\large Real-Time Two-Wheeler Violation Detection\\
   via Cascaded YOLOv11 Models and ONNX Runtime}\\[8pt]
-  {\normalsize\textit{hv-123} \quad\textbullet\quad
-   \textit{GPU Server: NVIDIA RTX 4060 Ti, 16\,GB VRAM}}\\[4pt]
+  {\normalsize
+    \textbf{Harsha Vardhan} (\texttt{itsmeharsha081459@gmail.com}) \quad\textbullet\quad
+    \textbf{Vishal Sriram} (\texttt{vishalsriram.ks@gmail.com}) \quad\textbullet\quad
+    \textbf{Anish Reddy R} (\texttt{Anish.R@iiitb.ac.in})
+  }\\[4pt]
   {\small
     \href{https://huggingface.co/spaces/hv-123/traffic-sentinel-ai}
          {\texttt{hv-123-traffic-sentinel-ai.hf.space}}
@@ -460,7 +463,7 @@ correctly labels riders in tightly cropped bike regions.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\linewidth]{full_v1-4/val_batch0_pred.jpg}
+\includegraphics[width=\linewidth]{full_train_batch.jpg}
 \caption{Full detector (\texttt{full\_v1-4}, GPU server, 150 epochs)
 validation predictions. Blue boxes: \texttt{two\_wheeler};
 orange boxes: \texttt{rider}. The model handles both ground-level and
@@ -471,7 +474,7 @@ elevated viewpoints drawn from the COCO\,+\,VisDrone corpus.}
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth, trim=0 0 0 0, clip]%
-  {plate_v1/val_batch0_pred.jpg}
+  {plate_val_pred.jpg}
 \caption{Plate detector (\texttt{plate\_v1}, GPU server) validation batch
 predictions. Boxes tightly localise \texttt{License Plate} regions across
 diverse lighting and angles, confirming mAP50\,=\,0.936 on 150-epoch GPU
@@ -482,7 +485,7 @@ training.}
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]%
-  {helmet_v1-2/val_batch0_pred.jpg}
+  {helmet_val_pred.jpg}
 \caption{Helmet detector (\texttt{helmet\_v1-2}, GPU server, 200 epochs)
 validation predictions. The model correctly discriminates
 \texttt{helmet} (green) from \texttt{no\_helmet} (red) in crowded crops
@@ -502,12 +505,12 @@ validating the extended 200-epoch training strategy.
 \centering
 \begin{subfigure}[t]{0.48\linewidth}
   \includegraphics[width=\linewidth]%
-    {plate_v1/confusion_matrix_normalized.png}
+    {plate_cm.png}
   \caption{Plate detector (\texttt{plate\_v1})}
 \end{subfigure}\hfill
 \begin{subfigure}[t]{0.48\linewidth}
   \includegraphics[width=\linewidth]%
-    {helmet_v1-2/confusion_matrix_normalized.png}
+    {helmet_cm.png}
   \caption{Helmet detector (\texttt{helmet\_v1-2})}
 \end{subfigure}
 \caption{Normalized confusion matrices. Values represent fraction of

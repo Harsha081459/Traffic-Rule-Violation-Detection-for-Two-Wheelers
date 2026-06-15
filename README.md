@@ -243,3 +243,9 @@ pytest                  # all tests
 ## License
 
 MIT — see [LICENSE](LICENSE)
+
+## Team
+
+- **Harsha Vardhan** (itsmeharsha081459@gmail.com)
+- **Vishal Sriram** (vishalsriram.ks@gmail.com)
+- **Anish Reddy R** (Anish.R@iiitb.ac.in)
