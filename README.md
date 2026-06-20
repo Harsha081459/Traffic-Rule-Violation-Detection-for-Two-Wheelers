@@ -246,6 +246,6 @@ MIT — see [LICENSE](LICENSE)
 
 ## Team
 
-- **Harsha Vardhan** (itsmeharsha081459@gmail.com)
-- **Vishal Sriram** (vishalsriram.ks@gmail.com)
+- **Harsha Vardhan** (Harsha.Vardhan@iiitb.ac.in)
+- **Vishal Sriram** (Vishal.Sriram@iiitb.ac.in)
 - **Anish Reddy R** (Anish.R@iiitb.ac.in)
