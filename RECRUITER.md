@@ -18,10 +18,11 @@ docker compose up        # builds image, starts server on port 8000
 
 | | |
 |-|-|
-| **Live URL** | https://huggingface.co/spaces/YOUR_USERNAME/traffic-sentinel-ai |
-| **API Docs** | https://huggingface.co/spaces/YOUR_USERNAME/traffic-sentinel-ai/api/docs |
+| **Live URL** | https://hv-123-traffic-sentinel-ai.hf.space/ |
+| **API Docs** | https://hv-123-traffic-sentinel-ai.hf.space/api/docs |
+| **Source** | https://github.com/Harsha081459/Traffic-Rule-Violation-Detection-for-Two-Wheelers |
 
-_(Replace `YOUR_USERNAME` with the owner's HF username)_
+_No setup required — the Space is live and serves predictions directly in the browser._
 
 ---
 

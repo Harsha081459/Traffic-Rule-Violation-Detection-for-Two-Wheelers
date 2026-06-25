@@ -90,6 +90,10 @@ All three PyTorch (`.pt`) weights were exported directly into the **ONNX format*
 | PyTorch | ~2,600 ms | 1.0x |
 | **ONNX** | **~1,300 ms** | **2.0x** |
 
+> Measured on a small benchmark image. On the larger 640×480 images used in the README
+> benchmark (~4.5 s → ~2.5 s), the speedup settles at **~1.8×**; we quote the conservative
+> 1.8× figure externally.
+
 ---
 
 ## 5. Production Stack
@@ -108,8 +112,8 @@ The final production deployment includes:
 
 ```bash
 # Clone and run
-git clone <repo>
-cd CV_Project
+git clone https://github.com/Harsha081459/Traffic-Rule-Violation-Detection-for-Two-Wheelers
+cd Traffic-Rule-Violation-Detection-for-Two-Wheelers
 docker-compose up --build
 
 # Visit http://localhost:8000
@@ -186,4 +190,4 @@ This project demonstrates end-to-end machine learning engineering:
 
 **All models exceed production-ready thresholds (mAP50 > 0.75)** and are deployed with a modern, scalable architecture.
 
-Live demo: **https://huggingface.co/spaces/YOUR_USERNAME/traffic-sentinel-ai**
+Live demo: **[https://hv-123-traffic-sentinel-ai.hf.space/](https://hv-123-traffic-sentinel-ai.hf.space/)**
