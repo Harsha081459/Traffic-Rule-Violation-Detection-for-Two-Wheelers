@@ -17,8 +17,8 @@
 ### Option 1 — Local (Python)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/traffic-sentinel-ai
-cd traffic-sentinel-ai
+git clone https://github.com/Harsha081459/Traffic-Rule-Violation-Detection-for-Two-Wheelers
+cd Traffic-Rule-Violation-Detection-for-Two-Wheelers
 python -m venv .venv && .venv\Scripts\activate   # Windows
 pip install -r requirements.txt
 # place model weights in ./models/ (see Training section)
@@ -129,8 +129,8 @@ Three specialized YOLOv11 models trained sequentially on an NVIDIA RTX 4060 Ti:
 pip install huggingface_hub
 huggingface-cli login          # opens browser auth
 
-python hf_upload_models.py --username YOUR_HF_USERNAME
-# Creates:  https://huggingface.co/YOUR_USERNAME/traffic-sentinel-models
+python hf_upload_models.py --username hv-123
+# Creates:  https://huggingface.co/hv-123/traffic-sentinel-models
 ```
 
 ### Step 2 — Create a new HF Space
@@ -144,8 +144,8 @@ python hf_upload_models.py --username YOUR_HF_USERNAME
 ### Step 3 — Push your code
 
 ```bash
-# Add the Space as a remote (replace YOUR_USERNAME)
-git remote add spaces https://huggingface.co/spaces/YOUR_USERNAME/traffic-sentinel-ai
+# Add the Space as a remote
+git remote add spaces https://huggingface.co/spaces/hv-123/traffic-sentinel-ai
 
 # HF Spaces uses the file named "Dockerfile" — copy our HF version
 cp Dockerfile.hf Dockerfile.spaces_deploy
@@ -161,11 +161,11 @@ In your Space → **Settings → Repository secrets**:
 
 | Name | Value |
 |------|-------|
-| `HF_MODEL_REPO` | `YOUR_USERNAME/traffic-sentinel-models` |
+| `HF_MODEL_REPO` | `hv-123/traffic-sentinel-models` |
 
 The container will download models on first boot (~2 min), then serve on port 7860.
 
-Your live URL: **`https://huggingface.co/spaces/YOUR_USERNAME/traffic-sentinel-ai`**
+Live URL: **[https://hv-123-traffic-sentinel-ai.hf.space/](https://hv-123-traffic-sentinel-ai.hf.space/)**
 
 ---
 
