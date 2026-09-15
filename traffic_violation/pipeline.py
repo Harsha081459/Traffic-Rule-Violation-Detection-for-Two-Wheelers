@@ -59,7 +59,6 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import Any, Optional, TypedDict
 
 import cv2
@@ -735,7 +734,6 @@ class TrafficViolationDetector:
         if bike_crop.size == 0:
             return None
         try:
-            from ultralytics import YOLO as _YOLO  # only if pose_det is a YOLODetector
             # Access the underlying YOLO model for keypoint output
             raw_model = getattr(self._pose_det, "_model", None)
             if raw_model is None:

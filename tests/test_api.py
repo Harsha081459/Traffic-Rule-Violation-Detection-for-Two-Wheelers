@@ -4,8 +4,6 @@ Tests for Traffic Sentinel AI FastAPI backend.
 Run with: pytest tests/test_api.py -v
 """
 
-from io import BytesIO
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient

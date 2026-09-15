@@ -51,3 +51,11 @@ sample.jpg
 _make_sample.py
 _ssh_probe.py
 *.pyc
+
+# Purged binaries / deploy scripts
+tectonic.exe
+*.exe
+_deploy.py
+
+# HF
+.ruff_cache/

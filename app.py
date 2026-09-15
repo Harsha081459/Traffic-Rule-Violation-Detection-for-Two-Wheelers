@@ -26,13 +26,13 @@ from typing import Any
 
 os.environ.setdefault("TV_USE_ONNX", "1")  # env var can override; set before import
 
-import cv2                        # noqa: E402
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from traffic_violation import TrafficViolationDetector, __version__
+from traffic_violation.config import config_from_env
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -121,7 +121,14 @@ async def _startup() -> None:
     global _detector
     logger.info("Loading TrafficViolationDetector…")
     t0 = time.perf_counter()
-    _detector = TrafficViolationDetector(model_dir="./models")
+    try:
+        _detector = TrafficViolationDetector(model_dir="./models")
+    except Exception:
+        # Keep the process alive: /api/health stays up and /predict returns 503
+        # until model weights are present in ./models/.
+        logger.exception("Detector failed to load — inference endpoints will return 503")
+        _detector = None
+        return
     logger.info("Detector ready in %.2f s", time.perf_counter() - t0)
 
 
@@ -148,7 +155,7 @@ def _validate_image(content: bytes, filename: str) -> None:
             status_code=413,
             detail=f"File too large. Maximum size is {MAX_FILE_SIZE_MB} MB.",
         )
-    if len(content) < 8:
+    if len(content) == 0:
         raise HTTPException(status_code=400, detail="File is empty or too small.")
 
     suffix = Path(filename).suffix.lower()
@@ -184,14 +191,13 @@ async def health() -> dict[str, Any]:
 @app.get("/api/info")
 async def info() -> dict[str, Any]:
     """Return runtime information about the loaded detector."""
-    if _detector is None:
-        raise HTTPException(status_code=503, detail="Detector not ready yet.")
-    cfg = _detector._cfg
+    cfg = _detector._cfg if _detector is not None else config_from_env("./models")
     return {
         "model_dir":     str(cfg.model_dir),
         "fast_mode":     cfg.fast_mode,
         "use_onnx":      cfg.use_onnx,
         "device":        cfg.device,
+        "detector_loaded": _detector is not None,
         "rate_limit":    f"{RATE_LIMIT_RPM} req/min per IP",
         "max_file_mb":   MAX_FILE_SIZE_MB,
     }
@@ -214,10 +220,6 @@ async def predict_image(request: Request, file: UploadFile = File(...)) -> JSONR
             detail=f"Rate limit exceeded. Maximum {RATE_LIMIT_RPM} requests/minute.",
         )
 
-    # ── Detector readiness ──────────────────────────────────────────
-    if _detector is None:
-        raise HTTPException(status_code=503, detail="Detector is still loading. Try again in a moment.")
-
     # ── Read & validate ─────────────────────────────────────────────
     try:
         content = await file.read()
@@ -226,6 +228,10 @@ async def predict_image(request: Request, file: UploadFile = File(...)) -> JSONR
 
     fname = file.filename or "upload.jpg"
     _validate_image(content, fname)
+
+    # ── Detector readiness ──────────────────────────────────────────
+    if _detector is None:
+        raise HTTPException(status_code=503, detail="Detector is still loading. Try again in a moment.")
 
     # ── Write temp file ─────────────────────────────────────────────
     suffix = Path(fname).suffix.lower() or ".jpg"
@@ -271,4 +277,5 @@ if __name__ == "__main__":
     import uvicorn
     # PORT env var is injected by HF Spaces; falls back to 8000 locally.
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False, workers=1)
+    # B104 suppressed: binding to all interfaces is required inside Docker / HF Spaces.
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False, workers=1)  # nosec B104

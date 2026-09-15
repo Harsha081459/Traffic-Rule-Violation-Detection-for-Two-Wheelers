@@ -1,5 +1,7 @@
 # Traffic Sentinel AI
 
+![CI](https://github.com/Harsha081459/Traffic-Rule-Violation-Detection-for-Two-Wheelers/actions/workflows/ci.yml/badge.svg)
+
 > Real-time two-wheeler violation detection powered by **YOLOv11 + ONNX Runtime**.  
 > Detects riders without helmets, over-loaded bikes (>2 riders), and reads license plates via EasyOCR.
 **🚀 Live Public Application:** [https://hv-123-traffic-sentinel-ai.hf.space/](https://hv-123-traffic-sentinel-ai.hf.space/)
@@ -19,13 +21,26 @@
 ```bash
 git clone https://github.com/Harsha081459/Traffic-Rule-Violation-Detection-for-Two-Wheelers
 cd Traffic-Rule-Violation-Detection-for-Two-Wheelers
-python -m venv .venv && .venv\Scripts\activate   # Windows
+
+python -m venv .venv
+.venv\Scripts\activate      # Windows
+# source .venv/bin/activate  # macOS / Linux
+
 pip install -r requirements.txt
-# place model weights in ./models/ (see Training section)
+
+# Model weights are not committed — download them from HF Hub:
+# Windows:  set HF_MODEL_REPO=hv-123/traffic-sentinel-models
+# macOS/Linux:  export HF_MODEL_REPO=hv-123/traffic-sentinel-models
+python download_models.py   # populates ./models/
+
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 Open **http://localhost:8000**
+
+> The app needs the ONNX weights in `./models/` to serve `/predict`. Without them the
+> server still starts and `/api/health` works, but inference returns 503. The unit
+> tests (`pytest -m unit`) run without any model files.
 
 ### Option 2 — Docker (single command)
 
@@ -165,31 +180,52 @@ In your Space → **Settings → Repository secrets**:
 
 The container will download models on first boot (~2 min), then serve on port 7860.
 
+> `requirements_hf.txt` pins target the Space's `python:3.10-slim` image; they were
+> verified through the live Space deployment, not on Python 3.12. For local installs
+> on 3.12 use `requirements.txt`.
+
 Live URL: **[https://hv-123-traffic-sentinel-ai.hf.space/](https://hv-123-traffic-sentinel-ai.hf.space/)**
 
 ---
 
 ## CI/CD Pipeline
 
-`.github/workflows/main.yml` runs on every push to `main`:
+`.github/workflows/ci.yml` runs on every push to `main` and on pull requests:
 
 | Job | Steps |
 |-----|-------|
-| **lint** | `ruff` + `black --check` |
-| **test** | `pytest -m unit` |
-| **docker** | Build & push to GitHub Container Registry |
-| **compose-test** | `docker compose up` + health-check `/api/health` |
-| **security** | `bandit` + `safety` |
+| **test** | `ruff check` (E9,F63,F7,F82,F401) + `pytest -m unit` on Python 3.12 |
+| **security** | `bandit -r app.py traffic_violation/ -ll` |
 
 ---
 
 ## Testing
 
 ```bash
-pip install pytest httpx
-pytest -m unit          # fast unit tests
+pip install -r requirements-dev.txt fastapi python-multipart numpy opencv-python-headless
+pytest -m unit          # fast unit tests (no model files needed)
 pytest                  # all tests
 ```
+
+---
+
+## Limitations
+
+- **No end-to-end violation-level accuracy.** The reported numbers are per-detector
+  mAP50 scores on each model's own validation split (see `TRAINING_SUMMARY.md` §3);
+  the full pipeline (rider counting → helmet logic → plate read) was never scored
+  end-to-end. The only end-to-end check documented is a single-image sanity test
+  after the ONNX postprocessing fix (`TRAINING_SUMMARY.md` §6).
+- **OCR quality is unquantified.** The plate model's 0.935 mAP50 measures plate
+  *localization*; character-level read accuracy of the EasyOCR stage was not
+  separately measured.
+- **Latency figures are single-image CPU benchmarks.** The ~1.8× ONNX speedup was
+  measured on 640×480 images on CPU (`TRAINING_SUMMARY.md` §4); real-world latency
+  varies with image size and hardware.
+- **Model weights are not in this repo.** A clean clone can run the tests, but
+  serving inference requires downloading the `.onnx` files from
+  [hv-123/traffic-sentinel-models](https://huggingface.co/hv-123/traffic-sentinel-models)
+  (verified reachable) or retraining via `train.py`.
 
 ---
 
@@ -220,10 +256,11 @@ pytest                  # all tests
 ├── run_test.py               # PyTorch vs ONNX speed benchmark
 ├── train.py                  # YOLOv11 training script
 ├── dataset_builder.py        # Data engineering pipeline
-├── requirements.txt          # Full dependencies (dev + training)
-├── requirements_hf.txt       # Inference-only (for HF Spaces)
+├── requirements.txt          # Full dependencies (training + API, Python 3.12)
+├── requirements_hf.txt       # Inference-only (for HF Spaces, Python 3.10)
+├── requirements-dev.txt      # Test/lint tooling
+├── LICENSE                   # MIT
 ├── README.md
-├── RECRUITER.md
 └── TRAINING_SUMMARY.md
 ```
 
