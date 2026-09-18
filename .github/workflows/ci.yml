@@ -47,3 +47,33 @@ jobs:
 
       - name: Run bandit
         run: bandit -r app.py traffic_violation/ -ll
+
+  model-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-inference.txt -r requirements-dev.txt
+      - run: python download_models.py
+        env:
+          HF_MODEL_REPO: hv-123/traffic-sentinel-models
+          HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+      - run: python -m pytest tests/test_model_smoke.py -q
+        env:
+          RUN_MODEL_SMOKE: "1"
+      - name: Build and start Docker demo
+        run: docker compose up --build -d --wait --wait-timeout 300
+      - name: Verify container readiness and upload
+        run: |
+          curl --fail http://localhost:8000/api/ready
+          curl --fail -F file=@figures/helmet_val_pred.jpg http://localhost:8000/predict
+      - name: Container logs
+        if: failure()
+        run: docker compose logs
+      - name: Stop containers
+        if: always()
+        run: docker compose stop

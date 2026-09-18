@@ -34,6 +34,7 @@ This class handles both automatically.
 
 from __future__ import annotations
 
+import ast
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -97,7 +98,12 @@ class ONNXDetector:
 
         # Prefer CUDA if available; silently fall back to CPU.
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        providers = [name for name in providers if name in ort.get_available_providers()]
         self._session = ort.InferenceSession(str(self._path), sess_options=opts, providers=providers)
+        metadata = self._session.get_modelmeta().custom_metadata_map
+        if not class_names and "names" in metadata:
+            names = ast.literal_eval(metadata["names"])
+            self._names = {int(key): str(value) for key, value in (names.items() if isinstance(names, dict) else enumerate(names))}
 
         meta = self._session.get_inputs()[0]
         self._input_name: str = meta.name
@@ -200,8 +206,8 @@ class ONNXDetector:
         """
         orig_h, orig_w = img.shape[:2]
         scale = imgsz / max(orig_h, orig_w)
-        new_h = int(round(orig_h * scale / 32)) * 32
-        new_w = int(round(orig_w * scale / 32)) * 32
+        new_h = max(1, round(orig_h * scale))
+        new_w = max(1, round(orig_w * scale))
 
         resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
@@ -283,11 +289,12 @@ class ONNXDetector:
         # Python-side NMS (Ultralytics already does NMS in YOLO, but ONNX
         # export may omit it depending on opset/version).
         dets: list[Det] = []
-        kept: list[int] = self._nms(
-            np.stack([x1, y1, x2, y2], axis=1),
-            max_scores,
-            iou_thr,
-        )
+        kept: list[int] = []
+        boxes = np.stack([x1, y1, x2, y2], axis=1)
+        for class_id in np.unique(cls_ids):
+            indices = np.flatnonzero(cls_ids == class_id)
+            kept.extend(int(indices[i]) for i in self._nms(boxes[indices], max_scores[indices], iou_thr))
+        kept.sort(key=lambda i: max_scores[i], reverse=True)
 
         for idx in kept:
             cid = int(cls_ids[idx])

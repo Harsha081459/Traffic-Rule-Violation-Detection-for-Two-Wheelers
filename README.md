@@ -16,7 +16,7 @@
 
 ## Quick Start
 
-### Option 1 — Local (Python)
+### Option 1 — Local detection demo (Python 3.12)
 
 ```bash
 git clone https://github.com/Harsha081459/Traffic-Rule-Violation-Detection-for-Two-Wheelers
@@ -26,7 +26,7 @@ python -m venv .venv
 .venv\Scripts\activate      # Windows
 # source .venv/bin/activate  # macOS / Linux
 
-pip install -r requirements.txt
+pip install -r requirements-inference.txt
 
 # Model weights are not committed — download them from HF Hub:
 # Windows:  set HF_MODEL_REPO=hv-123/traffic-sentinel-models
@@ -42,10 +42,14 @@ Open **http://localhost:8000**
 > server still starts and `/api/health` works, but inference returns 503. The unit
 > tests (`pytest -m unit`) run without any model files.
 
+Check `/api/ready`: HTTP 200 means detection models loaded, 503 means setup failed. `/api/health` is liveness only. `/api/info` and every prediction expose `ocr_available`. The published Hub repository contains four ONNX detectors **but no EasyOCR weights**. This minimal demo therefore detects bikes/helmets/plates but returns blank plate text (`ocr_available=false`). To enable text recognition, install EasyOCR and its PyTorch dependencies, provision its English recognition and detection weights under `models/easyocr/`, then restart and confirm `ocr_available=true`. OCR accuracy has not been benchmarked; blank text must not be interpreted as a successful read.
+
+`requirements.txt` remains the broader training dependency set; it is not required for this detection-only demo. In PowerShell set `$env:HF_MODEL_REPO='hv-123/traffic-sentinel-models'` before running the downloader. Downloads require internet access; inference uses the downloaded files.
+
 ### Option 2 — Docker (single command)
 
 ```bash
-docker compose up
+docker compose up --build -d --wait --wait-timeout 300
 ```
 
 Open **http://localhost:8000**
@@ -97,7 +101,7 @@ Three specialized YOLOv11 models trained sequentially on an NVIDIA RTX 4060 Ti:
 | helmet\_detector | YOLOv11s | 3 100 (Roboflow) | **0.838** | 37.8 MB |
 | plate\_detector | YOLOv11n | 9 570 (Roboflow) | **0.935** | 10.5 MB |
 
-> mAP50 > 0.75 is considered production-ready for variable real-world environments.
+> These are historical per-detector validation results, not an end-to-end safety or production-readiness guarantee. The complete violation/OCR pipeline has no independently reproduced accuracy benchmark.
 
 ---
 
@@ -181,8 +185,8 @@ In your Space → **Settings → Repository secrets**:
 The container will download models on first boot (~2 min), then serve on port 7860.
 
 > `requirements_hf.txt` pins target the Space's `python:3.10-slim` image; they were
-> verified through the live Space deployment, not on Python 3.12. For local installs
-> on 3.12 use `requirements.txt`.
+> not independently revalidated against the deployed Space. For the verified local
+> detection-only path on Python 3.12 use `requirements-inference.txt`.
 
 Live URL: **[https://hv-123-traffic-sentinel-ai.hf.space/](https://hv-123-traffic-sentinel-ai.hf.space/)**
 
@@ -196,6 +200,7 @@ Live URL: **[https://hv-123-traffic-sentinel-ai.hf.space/](https://hv-123-traffi
 |-----|-------|
 | **test** | `ruff check` (E9,F63,F7,F82,F401) + `pytest -m unit` on Python 3.12 |
 | **security** | `bandit -r app.py traffic_violation/ -ll` |
+| **model-smoke** | Downloads published ONNX weights, uploads a committed sample through FastAPI, builds Docker Compose and checks readiness/inference |
 
 ---
 
@@ -204,7 +209,10 @@ Live URL: **[https://hv-123-traffic-sentinel-ai.hf.space/](https://hv-123-traffi
 ```bash
 pip install -r requirements-dev.txt fastapi python-multipart numpy opencv-python-headless
 pytest -m unit          # fast unit tests (no model files needed)
-pytest                  # all tests
+pytest                  # unit tests; downloaded-model smoke is opt-in
+# After downloading weights, Linux/macOS:
+RUN_MODEL_SMOKE=1 python -m pytest tests/test_model_smoke.py -q
+# PowerShell: $env:RUN_MODEL_SMOKE='1'; python -m pytest tests/test_model_smoke.py -q
 ```
 
 ---

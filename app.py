@@ -25,6 +25,10 @@ from pathlib import Path
 from typing import Any
 
 os.environ.setdefault("TV_USE_ONNX", "1")  # env var can override; set before import
+os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", "25000000")
+
+import cv2
+import numpy as np
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,7 +126,7 @@ async def _startup() -> None:
     logger.info("Loading TrafficViolationDetector…")
     t0 = time.perf_counter()
     try:
-        _detector = TrafficViolationDetector(model_dir="./models")
+        _detector = TrafficViolationDetector(model_dir=os.environ.get("MODELS_DIR", "./models"))
     except Exception:
         # Keep the process alive: /api/health stays up and /predict returns 503
         # until model weights are present in ./models/.
@@ -137,8 +141,7 @@ async def _startup() -> None:
 # ---------------------------------------------------------------------------
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    return forwarded.split(",")[0].strip() if forwarded else (request.client.host or "unknown")
+    return request.client.host if request.client else "unknown"
 
 
 def _validate_image(content: bytes, filename: str) -> None:
@@ -166,11 +169,19 @@ def _validate_image(content: bytes, filename: str) -> None:
         )
 
     detected = imghdr.what(None, h=content)
-    if detected not in MAGIC_MIME:
+    if MAGIC_MIME.get(detected) not in ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=415,
             detail="File content does not look like a supported image (JPEG/PNG/WebP/BMP).",
         )
+    try:
+        image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error as exc:
+        raise HTTPException(status_code=400, detail="Image cannot be decoded within resource limits") from exc
+    if image is None:
+        raise HTTPException(status_code=400, detail="Image is corrupt or truncated")
+    if image.shape[0] * image.shape[1] > 25_000_000:
+        raise HTTPException(status_code=413, detail="Image exceeds the 25 megapixel limit")
 
 
 # ---------------------------------------------------------------------------
@@ -188,16 +199,24 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/ready")
+async def ready() -> dict[str, Any]:
+    if _detector is None:
+        raise HTTPException(status_code=503, detail="Detection models are unavailable; check server logs and restart after setup")
+    return {"status": "ready", "ocr_available": _detector._ocr.available}
+
+
 @app.get("/api/info")
 async def info() -> dict[str, Any]:
     """Return runtime information about the loaded detector."""
-    cfg = _detector._cfg if _detector is not None else config_from_env("./models")
+    cfg = _detector._cfg if _detector is not None else config_from_env(os.environ.get("MODELS_DIR", "./models"))
     return {
         "model_dir":     str(cfg.model_dir),
         "fast_mode":     cfg.fast_mode,
         "use_onnx":      cfg.use_onnx,
         "device":        cfg.device,
         "detector_loaded": _detector is not None,
+        "ocr_available": bool(_detector and _detector._ocr.available),
         "rate_limit":    f"{RATE_LIMIT_RPM} req/min per IP",
         "max_file_mb":   MAX_FILE_SIZE_MB,
     }
@@ -222,7 +241,7 @@ async def predict_image(request: Request, file: UploadFile = File(...)) -> JSONR
 
     # ── Read & validate ─────────────────────────────────────────────
     try:
-        content = await file.read()
+        content = await file.read(MAX_FILE_SIZE_BYTES + 1)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to read uploaded file: {exc}") from exc
 
@@ -249,7 +268,7 @@ async def predict_image(request: Request, file: UploadFile = File(...)) -> JSONR
         raise
     except Exception as exc:
         logger.exception("Inference failed for %s", fname)
-        raise HTTPException(status_code=500, detail=f"Inference error: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Inference failed; check server logs") from exc
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -260,6 +279,7 @@ async def predict_image(request: Request, file: UploadFile = File(...)) -> JSONR
         len(result.get("violations", [])),
         result.get("inference_time_sec", 0),
     )
+    result["ocr_available"] = _detector._ocr.available
     return JSONResponse(content=result)
 
 

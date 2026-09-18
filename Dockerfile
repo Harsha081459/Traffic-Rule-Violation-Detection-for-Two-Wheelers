@@ -4,7 +4,7 @@
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 1: Builder
 # ──────────────────────────────────────────────────────────────────────────
-FROM python:3.10-slim as builder
+FROM python:3.12-slim as builder
 
 WORKDIR /build
 
@@ -15,35 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install wheels into /build/wheels
-COPY <<EOF requirements.txt
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-pydantic-settings==2.1.0
-ultralytics==8.0.208
-opencv-python==4.8.1.78
-easyocr==1.7.0
-onnxruntime==1.16.3
-onnx==1.15.0
-onnxsim==0.4.33
-albumentations==1.3.1
-imagehash==4.3.1
-pillow==10.1.0
-pyyaml==6.0.1
-numpy==1.24.3
-opencv-contrib-python==4.8.1.78
-torch==2.1.1+cpu
-torchvision==0.16.1+cpu
-torchaudio==2.1.1+cpu
-fiftyone==0.20.1
-tqdm==4.66.1
-roboflow==0.2.28
-requests==2.31.0
-paramiko==3.3.1
-scp==0.14.5
-ray[tune]==2.8.1
-tzdata==2023.3
-EOF
+COPY requirements-inference.txt requirements.txt
 
 RUN pip install --upgrade pip setuptools wheel && \
     pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt
@@ -51,7 +23,7 @@ RUN pip install --upgrade pip setuptools wheel && \
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 2: Runtime
 # ──────────────────────────────────────────────────────────────────────────
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 # Set non-root user for security
 RUN useradd -m -u 1000 appuser
@@ -71,21 +43,21 @@ RUN pip install --upgrade pip && \
 COPY --chown=appuser:appuser app.py .
 COPY --chown=appuser:appuser traffic_violation/ ./traffic_violation/
 COPY --chown=appuser:appuser static/ ./static/
-COPY --chown=appuser:appuser models/ ./models/
+COPY --chown=appuser:appuser download_models.py .
+RUN mkdir -p /app/models && chown appuser:appuser /app/models
+ENV HF_MODEL_REPO=hv-123/traffic-sentinel-models TV_USE_ONNX=1
 
 # Compile Python to bytecode for faster startup
-RUN python -m compileall -b /app && \
-    find /app -name "*.py" -delete && \
-    find /app -type d -name "__pycache__" -exec chmod 755 {} \;
+RUN python -m compileall /app
 
 # Create a non-root user and switch to it
 USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/api/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ready', timeout=5)" || exit 1
 
 EXPOSE 8000
 
 # Run with gunicorn in production (or uvicorn in dev)
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["sh", "-c", "python download_models.py && exec uvicorn app:app --host 0.0.0.0 --port 8000 --workers 1"]

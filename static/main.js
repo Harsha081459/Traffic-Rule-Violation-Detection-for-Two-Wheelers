@@ -303,6 +303,9 @@ async function runAnalysis(file) {
     renderResults(data);
 
     toast(`Analysis complete — ${reportedMs} ms`, 'success', 3000);
+    if (data.ocr_available === false) {
+      toast('Detection completed, but plate text recognition is unavailable. OCR weights must be installed on the server.', 'warn', 0);
+    }
 
   } catch (err) {
     if (err.name === 'AbortError') return;
