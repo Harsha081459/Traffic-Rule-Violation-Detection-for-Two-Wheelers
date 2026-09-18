@@ -79,7 +79,7 @@ class _RateLimiter:
 
     def is_allowed(self, ip: str) -> bool:
         now     = time.monotonic()
-        elapsed = now - self._last_refill[ip]
+        elapsed = max(0.0, now - self._last_refill.get(ip, now))
         self._buckets[ip] = min(
             self._capacity,
             self._buckets[ip] + elapsed * self._rate,

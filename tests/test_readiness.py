@@ -32,6 +32,14 @@ def test_spoofed_forwarded_header_does_not_bypass_limiter(client, monkeypatch):
         assert response.status_code == expected
 
 
+def test_new_rate_limit_bucket_uses_a_single_clock_snapshot(monkeypatch):
+    clock = iter([100.0, 100.1])
+    monkeypatch.setattr(api, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    limiter = api._RateLimiter(1)
+    assert limiter.is_allowed("new-client")
+    assert not limiter.is_allowed("new-client")
+
+
 def test_header_only_png_is_not_a_valid_image(client):
     response = client.post("/predict", files={"file": ("x.png", b"\x89PNG\r\n\x1a\n" + bytes(30))})
     assert response.status_code == 400
